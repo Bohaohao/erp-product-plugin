@@ -72,9 +72,14 @@ function tryResolveGitProductMcp() {
       source: 'git pull'
     };
   } catch (error) {
-    process.stderr.write(
-      `Product MCP git sync failed. Falling back to sibling directory: ${siblingProductMcp}\n${error.message}\n`
-    );
+    process.stderr.write(`Product MCP git sync failed.\n${error.message}\n`);
+
+    if (hasProductMcp(cachedProductMcp) && existsSync(join(cachedProductMcp, '.git'))) {
+      process.stderr.write(`Using existing cached Product MCP checkout: ${cachedProductMcp}\n`);
+      return { dir: cachedProductMcp, updated: false, source: 'cached checkout fallback' };
+    }
+
+    process.stderr.write(`Falling back to sibling directory: ${siblingProductMcp}\n`);
     return null;
   }
 }
@@ -91,7 +96,7 @@ function resolveProductMcp() {
   }
 
   throw new Error(
-    `Product MCP is unavailable. Tried fixed git repo ${productMcpRepoUrl} in ${cachedProductMcp}, then sibling directory ${siblingProductMcp}.`
+    `Product MCP is unavailable. Tried fixed git repo ${productMcpRepoUrl}, cached checkout ${cachedProductMcp}, then sibling directory ${siblingProductMcp}.`
   );
 }
 
