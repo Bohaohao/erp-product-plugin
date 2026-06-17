@@ -79,7 +79,7 @@ Codex Plugin Marketplace
 当本仓库发布到远程 Git 仓库后，使用：
 
 ```powershell
-codex plugin marketplace add <erp-product-plugin-repo-url> --ref master
+codex plugin marketplace add https://github.com/Bohaohao/erp-product-plugin.git --ref master
 ```
 
 然后在 Codex 中安装或启用 `ERP Product` 插件，并新建 thread 使用。
@@ -312,7 +312,7 @@ Codex Plugin Marketplace
 After this repository is published to a remote Git repository, use:
 
 ```powershell
-codex plugin marketplace add <erp-product-plugin-repo-url> --ref master
+codex plugin marketplace add https://github.com/Bohaohao/erp-product-plugin.git --ref master
 ```
 
 Then install or enable the `ERP Product` plugin in Codex and start a new thread.
