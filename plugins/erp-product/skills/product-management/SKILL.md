@@ -19,7 +19,9 @@ If auth fails, tell the user to open Chrome, log in to the ERP system under the 
 
 Do not tell the user to abandon the current thread because the plugin, marketplace, or Product MCP runtime needs to update. Existing threads may contain package parsing results, field mappings, user confirmations, and business decisions.
 
-If a reload is needed, ask the user to preserve and return to the same thread after reconnecting or restarting Codex. Before any disruptive action, summarize the current product workflow state in the conversation so the same thread can continue safely.
+For Product MCP runtime checks, call `product_runtime_status`. For immediate Product MCP runtime updates, call `product_runtime_refresh`; the plugin proxy can refresh or restart the Product MCP child runtime while preserving the current Codex thread.
+
+If the user is upgrading from an already-running pre-proxy plugin process, that old process cannot load new proxy code retroactively. If a reconnect is needed, ask the user to preserve and return to the same thread after reconnecting or restarting Codex. Before any disruptive action, summarize the current product workflow state in the conversation so the same thread can continue safely.
 
 ## Package Workflow
 
@@ -51,6 +53,8 @@ After creation, call `product_get_detail` with the returned product ID to verify
 Use these tools directly for smaller requests:
 
 - Login check: `product_auth_status`.
+- Runtime check: `product_runtime_status`.
+- Runtime refresh: `product_runtime_refresh`.
 - Local file upload: `product_upload_file`.
 - Package validation only: `product_precheck_package`.
 - Reference lookup: `product_list_categories`, `product_get_category_config`, `product_list_suppliers`, `product_list_regions`, `product_get_dict`.

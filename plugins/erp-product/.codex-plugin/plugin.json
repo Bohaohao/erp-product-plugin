@@ -1,6 +1,6 @@
 {
   "name": "erp-product",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Create ERP products from Codex using the user's Chrome ERP login.",
   "author": {
     "name": "ERP Product Team"
@@ -9,7 +9,7 @@
   "interface": {
     "displayName": "ERP Product",
     "shortDescription": "Precheck, upload, create, and verify ERP products.",
-    "longDescription": "ERP Product lets Codex use a local bridge to read the current Chrome ERP login, precheck local product packages, upload product files to OSS, create ERP products through the remote Product MCP, and verify created product details.",
+    "longDescription": "ERP Product lets Codex use a local runtime proxy to manage Product MCP, read the current Chrome ERP login through a token bridge, precheck local product packages, upload product files to OSS, create ERP products through the remote Product MCP, and verify created product details.",
     "developerName": "ERP Product Team",
     "category": "Productivity",
     "capabilities": ["MCP", "Local files", "ERP workflow"],
