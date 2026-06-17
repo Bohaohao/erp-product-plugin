@@ -15,6 +15,12 @@ Call `product_auth_status` before any backend lookup, upload, or create operatio
 
 If auth fails, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
 
+## Conversation Continuity
+
+Do not tell the user to abandon the current thread because the plugin, marketplace, or Product MCP runtime needs to update. Existing threads may contain package parsing results, field mappings, user confirmations, and business decisions.
+
+If a reload is needed, ask the user to preserve and return to the same thread after reconnecting or restarting Codex. Before any disruptive action, summarize the current product workflow state in the conversation so the same thread can continue safely.
+
 ## Package Workflow
 
 When the user provides a local product package directory or product markdown file:
