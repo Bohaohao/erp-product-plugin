@@ -6,15 +6,13 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = dirname(scriptDir);
-const defaultSiblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
-const userCacheProductMcp = join(homedir(), '.erp-product', 'product-mcp');
-const productMcpDir = resolve(process.env.PRODUCT_MCP_HOME || (existsSync(defaultSiblingProductMcp) ? defaultSiblingProductMcp : userCacheProductMcp));
-const productMcpRepoUrl = process.env.PRODUCT_MCP_REPO_URL || '';
+const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
+const productMcpRef = 'master';
+const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
+const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const bridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
-const bridgeEntry = join(productMcpDir, 'dist', 'localBridge.js');
-const runtimeDependency = join(productMcpDir, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
 
-function run(command, args, cwd = productMcpDir) {
+function run(command, args, cwd) {
   const result = spawnSync(command, args, {
     cwd,
     env: process.env,
@@ -22,34 +20,93 @@ function run(command, args, cwd = productMcpDir) {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
+  if (result.error) {
+    throw result.error;
+  }
+
   if (result.stdout) process.stderr.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
 
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
   }
+
+  return result.stdout?.trim() ?? '';
 }
 
 function npmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm';
 }
 
-if (!existsSync(join(productMcpDir, 'package.json'))) {
-  if (!productMcpRepoUrl) {
-    throw new Error(
-      `Product MCP repo not found: ${productMcpDir}. Clone product-mcp next to this plugin repo, set PRODUCT_MCP_HOME, or set PRODUCT_MCP_REPO_URL.`
-    );
-  }
-
-  mkdirSync(dirname(productMcpDir), { recursive: true });
-  run('git', ['clone', productMcpRepoUrl, productMcpDir], dirname(productMcpDir));
+function hasProductMcp(dir) {
+  return existsSync(join(dir, 'package.json'));
 }
 
-if (!existsSync(bridgeEntry)) {
-  run(npmCommand(), ['ci']);
-  run(npmCommand(), ['run', 'build']);
+function gitHead(dir) {
+  return run('git', ['rev-parse', 'HEAD'], dir);
+}
+
+function tryResolveGitProductMcp() {
+  try {
+    if (!hasProductMcp(cachedProductMcp)) {
+      mkdirSync(dirname(cachedProductMcp), { recursive: true });
+      run('git', ['clone', productMcpRepoUrl, cachedProductMcp], dirname(cachedProductMcp));
+      return { dir: cachedProductMcp, updated: true, source: 'git clone' };
+    }
+
+    if (!existsSync(join(cachedProductMcp, '.git'))) {
+      throw new Error(`Cached Product MCP is not a git checkout: ${cachedProductMcp}`);
+    }
+
+    const before = gitHead(cachedProductMcp);
+
+    run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp);
+    run('git', ['fetch', '--prune', 'origin'], cachedProductMcp);
+    run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp);
+
+    const after = gitHead(cachedProductMcp);
+
+    return {
+      dir: cachedProductMcp,
+      updated: before !== after,
+      source: 'git pull'
+    };
+  } catch (error) {
+    process.stderr.write(
+      `Product MCP git sync failed. Falling back to sibling directory: ${siblingProductMcp}\n${error.message}\n`
+    );
+    return null;
+  }
+}
+
+function resolveProductMcp() {
+  const gitProductMcp = tryResolveGitProductMcp();
+  if (gitProductMcp) {
+    return gitProductMcp;
+  }
+
+  if (hasProductMcp(siblingProductMcp)) {
+    process.stderr.write(`Using sibling Product MCP fallback: ${siblingProductMcp}\n`);
+    return { dir: siblingProductMcp, updated: false, source: 'sibling fallback' };
+  }
+
+  throw new Error(
+    `Product MCP is unavailable. Tried fixed git repo ${productMcpRepoUrl} in ${cachedProductMcp}, then sibling directory ${siblingProductMcp}.`
+  );
+}
+
+const productMcp = resolveProductMcp();
+const productMcpDir = productMcp.dir;
+const bridgeEntry = join(productMcpDir, 'dist', 'localBridge.js');
+const runtimeDependency = join(productMcpDir, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
+
+process.stderr.write(`Using Product MCP (${productMcp.source}): ${productMcpDir}\n`);
+
+if (productMcp.updated || !existsSync(bridgeEntry)) {
+  run(npmCommand(), ['ci'], productMcpDir);
+  run(npmCommand(), ['run', 'build'], productMcpDir);
 } else if (!existsSync(runtimeDependency)) {
-  run(npmCommand(), ['ci', '--omit=dev']);
+  run(npmCommand(), ['ci', '--omit=dev'], productMcpDir);
 }
 
 const child = spawnSync(process.execPath, [bridgeEntry, '--config', bridgeConfig], {

@@ -2,27 +2,28 @@
 
 This repository is the Codex plugin marketplace for ERP Product. It intentionally does not contain the Product MCP source code.
 
-Use it with the sibling `product-mcp` repository:
+The plugin resolves Product MCP at runtime with this order:
 
-```text
-parent/
-  product-mcp/
-  erp-product-plugin/
-```
+1. Clone or update the fixed Product MCP Git repository in the user cache:
+   `https://github.com/Bohaohao/product-mcp.git`
+2. Use the latest cached checkout after a successful clone or `git pull`.
+3. If Git connection, clone, fetch, or pull fails, fall back to a sibling `product-mcp` directory next to this marketplace repository.
 
 The plugin starts `product-mcp/dist/localBridge.js`, reads the user's Chrome ERP login through the bridge, and exposes the `product_*` MCP tools to Codex.
 
 ## Local Development
 
-Clone both repositories side by side:
+For normal users, installing this marketplace is enough. The launcher will fetch Product MCP from the fixed Git URL automatically.
+
+For offline development or Git fallback testing, clone both repositories side by side:
 
 ```powershell
 cd D:\project
-git clone <product-mcp-repo-url> product-mcp
+git clone https://github.com/Bohaohao/product-mcp.git product-mcp
 git clone <erp-product-plugin-repo-url> erp-product-plugin
 ```
 
-The plugin launcher will run `npm ci` and `npm run build` inside `product-mcp` if needed. You can also prepare it manually:
+The plugin launcher will run `npm ci` and `npm run build` inside Product MCP when the Git checkout is new, updated, or missing build output. You can also prepare the sibling fallback manually:
 
 ```powershell
 cd D:\project\product-mcp
@@ -30,8 +31,6 @@ npm ci
 npm run build
 npm run smoke
 ```
-
-If `product-mcp` is not a sibling directory, set `PRODUCT_MCP_HOME` to its absolute path before launching Codex.
 
 ## Add Marketplace
 
