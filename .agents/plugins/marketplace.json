@@ -1,0 +1,20 @@
+{
+  "name": "erp-product-marketplace",
+  "interface": {
+    "displayName": "ERP Product"
+  },
+  "plugins": [
+    {
+      "name": "erp-product",
+      "source": {
+        "source": "local",
+        "path": "./plugins/erp-product"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ERP Product Management"
+  short_description: "Create ERP products from Codex"
+  default_prompt: "Precheck an ERP product package and create the product."

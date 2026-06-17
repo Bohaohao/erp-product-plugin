@@ -1,0 +1,64 @@
+---
+name: product-management
+description: ERP product creation workflow through Product MCP. Use when the user asks Codex to check ERP product login status, precheck a local product package or product markdown file, upload product media/files, resolve category/unit/supplier/region/dictionary references, create an ERP product, or verify a created product.
+---
+
+# Product Management
+
+## Overview
+
+Use the `erp-product` MCP tools to turn local ERP product materials into a checked, uploaded, created, and verified product. The local bridge reads the user's Chrome ERP login token; never ask the user to paste or reveal the token.
+
+## First Step
+
+Call `product_auth_status` before any backend lookup, upload, or create operation.
+
+If auth fails, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
+
+## Package Workflow
+
+When the user provides a local product package directory or product markdown file:
+
+1. Call `product_precheck_package` with the local path and `includeDraft: true`.
+2. Report blocking errors, warnings, generated image crops, and the upload queue.
+3. Resolve unresolved names by calling read-only tools:
+   - `product_list_categories` for category names and IDs.
+   - `product_get_category_config` for unit IDs, base configs, technical params, and optional configs.
+   - `product_list_suppliers` for supplier IDs and names.
+   - `product_list_regions` when the draft does not use all regions.
+   - `product_get_dict` when dictionary values are needed.
+4. Upload each valid local file with `product_upload_file`. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
+5. Build the `product_create` input from the precheck draft, resolved backend IDs, uploaded URLs, and any user corrections.
+
+Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
+
+## Create Safety
+
+`product_create` writes a real ERP product. Only call it after the user gives an explicit confirmation in the current conversation.
+
+Before calling `product_create`, summarize the product name, category, unit, supplier, region scope, main image status, and any remaining warnings. Require `confirm: true` in the tool input.
+
+After creation, call `product_get_detail` with the returned product ID to verify at least base and media sections. Report the product ID plus edit/view paths when available.
+
+## Direct Tool Use
+
+Use these tools directly for smaller requests:
+
+- Login check: `product_auth_status`.
+- Local file upload: `product_upload_file`.
+- Package validation only: `product_precheck_package`.
+- Reference lookup: `product_list_categories`, `product_get_category_config`, `product_list_suppliers`, `product_list_regions`, `product_get_dict`.
+- Acceptance check: `product_get_detail`.
+
+Prefer read-only tools before asking the user for IDs. Pass large numeric IDs as strings.
+
+## Error Handling
+
+For missing token or token bridge failures, explain the recoverable action:
+
+- Open Chrome.
+- Log in to the ERP system.
+- Keep the ERP tab under the configured URL prefix.
+- Retry `product_auth_status`.
+
+For backend validation errors, preserve the backend message, include the request ID when present, and suggest the smallest next check, such as category config lookup, supplier lookup, or package correction.
