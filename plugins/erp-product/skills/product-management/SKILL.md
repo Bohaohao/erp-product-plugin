@@ -15,6 +15,16 @@ Use the local bridge as the entry point for Codex/local package workflows. Local
 
 Call `product_auth_status` before any backend lookup, upload, or create operation. This preflights and warms `chrome-devtools-mcp` through npm before checking the Chrome ERP login token.
 
+If it returns `CHROME_REMOTE_DEBUGGING_NOT_ALLOWED`, stop the workflow and show the user the returned steps. In plain language, tell the user to:
+
+1. Open local Chrome, not Edge or another browser.
+2. Open or switch to the configured ERP page.
+3. Make sure the ERP page is logged in; if needed, log in again and refresh.
+4. Click Chrome's "Allow remote debugging for this browser instance" prompt and choose Allow.
+5. Return to Codex and retry the login-state check.
+
+Do not treat a missing token cache by itself as a remote-debugging failure. If Chrome is reachable but no ERP token exists, ask the user to log in to ERP or refresh the ERP page, then retry `product_auth_status`. After the user completes the remote-debugging steps, call `product_auth_status` again with no extra confirmation parameter, then continue the original task.
+
 If auth fails because `chrome-devtools-mcp` cannot be resolved, tell the user to allow npm/npx network access or configure npm proxy, then retry `product_auth_status`. If auth fails because no token is present, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
 
 ## Conversation Continuity
