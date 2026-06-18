@@ -13,9 +13,9 @@ Use the local bridge as the entry point for Codex/local package workflows. Local
 
 ## First Step
 
-Call `product_auth_status` before any backend lookup, upload, or create operation.
+Call `product_auth_status` before any backend lookup, upload, or create operation. This preflights and warms `chrome-devtools-mcp` through npm before checking the Chrome ERP login token.
 
-If auth fails, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
+If auth fails because `chrome-devtools-mcp` cannot be resolved, tell the user to allow npm/npx network access or configure npm proxy, then retry `product_auth_status`. If auth fails because no token is present, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
 
 ## Conversation Continuity
 
