@@ -25,7 +25,7 @@ If it returns `CHROME_REMOTE_DEBUGGING_NOT_ALLOWED`, stop the workflow and show 
 
 Do not treat a missing token cache by itself as a remote-debugging failure. If Chrome is reachable but no ERP token exists, ask the user to log in to ERP or refresh the ERP page, then retry `product_auth_status`. After the user completes the remote-debugging steps, call `product_auth_status` again with no extra confirmation parameter, then continue the original task.
 
-If auth fails because `chrome-devtools-mcp` cannot be resolved, tell the user to allow npm/npx network access or configure npm proxy, then retry `product_auth_status`. If auth fails because no token is present, tell the user to open Chrome, log in to the ERP system under the configured `https://test.eysscm.com/erp/` page, refresh the ERP page, then retry. Include the matched page URL and token storage key if the tool returns them, but never expose token content.
+If auth fails because `chrome-devtools-mcp` cannot be resolved, tell the user to allow npm/npx network access or configure npm proxy, then retry `product_auth_status`. If auth fails because no token is present, tell the user to open Chrome, log in to the ERP system under the currently resolved `projectUrl` or one of the returned `matchUrlPrefixes`, refresh the ERP page, then retry. Include the resolved environment, matched page URL, URL prefixes, and token storage key if the tool returns them, but never expose token content.
 
 ## Conversation Continuity
 

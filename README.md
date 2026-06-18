@@ -175,17 +175,27 @@ plugins/erp-product/config/product-token-bridge.config.json
 
 ```json
 {
-  "projectUrl": "https://test.eysscm.com/erp/purchase",
-  "matchUrlPrefixes": ["https://test.eysscm.com/erp/"],
+  "environment": "stage",
+  "environments": {
+    "stage": {
+      "projectUrl": "https://test.eysscm.com/erp/commodity/commodity",
+      "matchUrlPrefixes": ["https://test.eysscm.com/erp/"],
+      "backendBaseUrl": "https://test.eysscm.com/api"
+    },
+    "prod": {
+      "projectUrl": "https://eysscm.com/erp/commodity/commodity",
+      "matchUrlPrefixes": ["https://eysscm.com/erp/", "https://www.eysscm.com/erp/"],
+      "backendBaseUrl": "https://eysscm.com/api"
+    }
+  },
   "tokenStorageKey": "Admin-Token",
   "remoteMcpUrl": "http://47.95.237.95:8787/mcp",
-  "backendBaseUrl": "https://test.eysscm.com/api",
   "clientId": "e5cd7e4891bf95d1d19206ce24a7b32e",
   "language": "zh_CN"
 }
 ```
 
-如需切换 ERP 环境，优先修改这个配置文件，而不是修改 marketplace JSON。
+如需切换 ERP 环境，优先把 `environment` 改为 `stage` 或 `prod`，也可以在启动 bridge 前设置 `PRODUCT_MCP_ENV=prod`。不要修改 marketplace JSON。
 
 ## 本地验证
 
@@ -441,17 +451,27 @@ Important fields:
 
 ```json
 {
-  "projectUrl": "https://test.eysscm.com/erp/purchase",
-  "matchUrlPrefixes": ["https://test.eysscm.com/erp/"],
+  "environment": "stage",
+  "environments": {
+    "stage": {
+      "projectUrl": "https://test.eysscm.com/erp/commodity/commodity",
+      "matchUrlPrefixes": ["https://test.eysscm.com/erp/"],
+      "backendBaseUrl": "https://test.eysscm.com/api"
+    },
+    "prod": {
+      "projectUrl": "https://eysscm.com/erp/commodity/commodity",
+      "matchUrlPrefixes": ["https://eysscm.com/erp/", "https://www.eysscm.com/erp/"],
+      "backendBaseUrl": "https://eysscm.com/api"
+    }
+  },
   "tokenStorageKey": "Admin-Token",
   "remoteMcpUrl": "http://47.95.237.95:8787/mcp",
-  "backendBaseUrl": "https://test.eysscm.com/api",
   "clientId": "e5cd7e4891bf95d1d19206ce24a7b32e",
   "language": "zh_CN"
 }
 ```
 
-To switch ERP environments, update this config file instead of changing marketplace JSON.
+To switch ERP environments, set `environment` to `stage` or `prod`, or start the bridge with `PRODUCT_MCP_ENV=prod`. Do not change marketplace JSON.
 
 ## Local Verification
 
