@@ -9,6 +9,8 @@ description: ERP product creation workflow through Product MCP. Use when the use
 
 Use the `erp-product` MCP tools to turn local ERP product materials into a checked, uploaded, created, and verified product. The local bridge reads the user's Chrome ERP login token; never ask the user to paste or reveal the token.
 
+Use the local bridge as the entry point for Codex/local package workflows. Local files must be uploaded with `product_upload_file` first; do not send local paths, file bytes, or large base64 payloads to the remote HTTP MCP or to `product_create`.
+
 ## First Step
 
 Call `product_auth_status` before any backend lookup, upload, or create operation.
@@ -35,7 +37,7 @@ When the user provides a local product package directory or product markdown fil
    - `product_list_suppliers` for supplier IDs and names.
    - `product_list_regions` when the draft does not use all regions.
    - `product_get_dict` when dictionary values are needed.
-4. Upload each valid local file with `product_upload_file`. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
+4. Upload each valid local file with `product_upload_file`. Preserve `dedupeKey`, `sourceRelativePath`, and `sourceLocalPath` from each `uploadQueue` item so repeated package files can reuse the first OSS URL. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
 5. Build the `product_create` input from the precheck draft, resolved backend IDs, uploaded URLs, and any user corrections.
 
 Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
@@ -45,6 +47,8 @@ Stop and ask for the missing business decision when a required field cannot be i
 `product_create` writes a real ERP product. Only call it after the user gives an explicit confirmation in the current conversation.
 
 Before calling `product_create`, summarize the product name, category, unit, supplier, region scope, main image status, and any remaining warnings. Require `confirm: true` in the tool input.
+
+`product_create` should receive business fields and already-uploaded OSS URLs only. Never pass local paths, raw file content, or base64 file payloads to it.
 
 After creation, call `product_get_detail` with the returned product ID to verify at least base and media sections. Report the product ID plus edit/view paths when available.
 
