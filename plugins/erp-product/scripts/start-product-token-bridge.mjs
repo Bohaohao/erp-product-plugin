@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.8';
+const launcherVersion = '0.3.9';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -65,10 +65,37 @@ function processEnv() {
   if (process.platform !== 'win32') {
     const delimiter = ':';
     const existingPath = env.PATH || env.Path || '';
-    const pathParts = [...posixPathEntries, ...existingPath.split(delimiter)].filter(Boolean);
+    const pathParts = [...posixPathEntries, ...nodeManagerPathEntries(), ...existingPath.split(delimiter)].filter(Boolean);
     env.PATH = [...new Set(pathParts)].join(delimiter);
   }
   return env;
+}
+
+function nodeManagerPathEntries(home = homedir()) {
+  const entries = [
+    join(home, '.volta', 'bin'),
+    join(home, '.asdf', 'shims'),
+    join(home, '.nodenv', 'shims'),
+    join(home, '.fnm'),
+    join(home, '.local', 'bin'),
+    join(home, '.local', 'share', 'mise', 'shims')
+  ];
+  const nvmNodeVersions = join(home, '.nvm', 'versions', 'node');
+
+  try {
+    if (existsSync(nvmNodeVersions)) {
+      const nodeBins = readdirSync(nvmNodeVersions)
+        .map((version) => join(nvmNodeVersions, version, 'bin'))
+        .filter((entry) => existsSync(entry))
+        .sort()
+        .reverse();
+      entries.push(...nodeBins);
+    }
+  } catch {
+    // Ignore unreadable version-manager directories; PATH fallback still includes system locations.
+  }
+
+  return entries.filter((entry) => existsSync(entry));
 }
 
 function runNpm(args, cwd) {
