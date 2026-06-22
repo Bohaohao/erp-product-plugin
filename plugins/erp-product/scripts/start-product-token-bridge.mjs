@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -14,7 +14,7 @@ const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.2.8';
+const proxyVersion = '0.2.9';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 
 let sdk;
@@ -65,8 +65,12 @@ function run(command, args, cwd, options = {}) {
   return result.stdout?.trim() ?? '';
 }
 
-function npmCommand() {
-  return process.platform === 'win32' ? 'npm.cmd' : 'npm';
+function runNpm(args, cwd) {
+  if (process.platform === 'win32') {
+    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd);
+  }
+
+  return run('npm', args, cwd);
 }
 
 function hasProductMcp(dir) {
@@ -79,6 +83,20 @@ function bridgeEntryFor(dir) {
 
 function runtimeDependencyFor(dir) {
   return join(dir, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
+}
+
+function sourceEntryFor(dir) {
+  return join(dir, 'src', 'localBridge.ts');
+}
+
+function isSourceNewerThanBuild(dir) {
+  try {
+    const source = statSync(sourceEntryFor(dir));
+    const build = statSync(bridgeEntryFor(dir));
+    return source.mtimeMs > build.mtimeMs;
+  } catch {
+    return false;
+  }
 }
 
 function gitHead(dir) {
@@ -114,6 +132,78 @@ function syncRuntimeBridgeConfig() {
   }
 
   return nextHash;
+}
+
+function normalizeEnvironmentName(value) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (['prod', 'production'].includes(normalized)) return 'prod';
+  if (['stage', 'staging', 'test', 'testing'].includes(normalized)) return 'stage';
+  return normalized;
+}
+
+function readCsvEnv(name) {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+
+  const values = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return values.length ? values : undefined;
+}
+
+function firstEnv(names) {
+  return names.map((name) => process.env[name]?.trim()).find(Boolean);
+}
+
+function resolveBridgeConfigPreview(config) {
+  const selectedEnvironment = normalizeEnvironmentName(
+    firstEnv(['PRODUCT_MCP_ENV', 'PRODUCT_MCP_BRIDGE_ENV', 'ERP_PRODUCT_ENV']) ||
+      config.environment ||
+      (config.environments?.stage ? 'stage' : undefined)
+  );
+  const environmentConfig = selectedEnvironment ? config.environments?.[selectedEnvironment] : undefined;
+
+  if (selectedEnvironment && config.environments && !environmentConfig) {
+    return {
+      ok: false,
+      error: `Bridge config environment not found: ${selectedEnvironment}.`
+    };
+  }
+
+  const projectUrl = process.env.PRODUCT_MCP_PROJECT_URL || environmentConfig?.projectUrl || config.projectUrl;
+  const matchUrlPrefixes = readCsvEnv('PRODUCT_MCP_MATCH_URL_PREFIXES') || environmentConfig?.matchUrlPrefixes || config.matchUrlPrefixes;
+
+  return {
+    ok: Boolean(projectUrl),
+    environment: selectedEnvironment,
+    projectUrl,
+    matchUrlPrefixes: matchUrlPrefixes?.length ? matchUrlPrefixes : projectUrl ? [projectUrl] : [],
+    tokenStorageKey: process.env.PRODUCT_MCP_TOKEN_STORAGE_KEY || config.tokenStorageKey,
+    remoteMcpUrl: process.env.PRODUCT_MCP_REMOTE_MCP_URL || environmentConfig?.remoteMcpUrl || config.remoteMcpUrl,
+    backendBaseUrl:
+      firstEnv(['PRODUCT_MCP_BRIDGE_BACKEND_BASE_URL', 'PRODUCT_MCP_BACKEND_BASE_URL']) ||
+      environmentConfig?.backendBaseUrl ||
+      config.backendBaseUrl,
+    language: process.env.PRODUCT_MCP_LANGUAGE || config.language
+  };
+}
+
+function readRuntimeBridgeConfigPreview() {
+  try {
+    return resolveBridgeConfigPreview(JSON.parse(readFileSync(runtimeBridgeConfig, 'utf8')));
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function arraysEqual(left = [], right = []) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function tryResolveGitProductMcp() {
@@ -178,15 +268,23 @@ function resolveProductMcp() {
 function ensureProductMcp(selection) {
   const bridgeEntry = bridgeEntryFor(selection.dir);
   const runtimeDependency = runtimeDependencyFor(selection.dir);
+  const buildIsStale = existsSync(bridgeEntry) && isSourceNewerThanBuild(selection.dir);
+  let rebuilt = false;
 
   process.stderr.write(`Using Product MCP (${selection.source}): ${selection.dir}\n`);
 
-  if (selection.updated || !existsSync(bridgeEntry)) {
-    run(npmCommand(), ['ci'], selection.dir);
-    run(npmCommand(), ['run', 'build'], selection.dir);
+  if (selection.updated || !existsSync(bridgeEntry) || buildIsStale) {
+    runNpm(['ci'], selection.dir);
+    runNpm(['run', 'build'], selection.dir);
+    rebuilt = true;
   } else if (!existsSync(runtimeDependency)) {
-    run(npmCommand(), ['ci', '--omit=dev'], selection.dir);
+    runNpm(['ci', '--omit=dev'], selection.dir);
   }
+
+  return {
+    rebuilt,
+    buildIsStale
+  };
 }
 
 function importFromProductMcp(specifier) {
@@ -274,6 +372,7 @@ async function startChildRuntime() {
       childToolsCache = [];
       childStartedAt = undefined;
       childRuntimeCommit = undefined;
+      childBridgeConfigHash = undefined;
     }
   };
 
@@ -342,14 +441,14 @@ async function syncProductMcp(options = {}) {
 
     try {
       const nextProductMcp = resolveProductMcp();
-      ensureProductMcp(nextProductMcp);
+      const ensureResult = ensureProductMcp(nextProductMcp);
       const afterConfigHash = syncRuntimeBridgeConfig();
 
       productMcp = nextProductMcp;
       productMcpDir = nextProductMcp.dir;
 
       const afterCommit = gitHeadSafe(productMcpDir);
-      const updated = nextProductMcp.updated || beforeDir !== productMcpDir || beforeCommit !== afterCommit;
+      const updated = nextProductMcp.updated || ensureResult.rebuilt || beforeDir !== productMcpDir || beforeCommit !== afterCommit;
       const bridgeConfigChanged =
         Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== afterConfigHash;
       let restarted = false;
@@ -385,6 +484,8 @@ async function syncProductMcp(options = {}) {
         beforeConfigHash,
         afterConfigHash,
         bridgeConfigChanged,
+        rebuilt: ensureResult.rebuilt,
+        buildIsStale: ensureResult.buildIsStale,
         dir: productMcpDir
       };
     } catch (error) {
@@ -457,8 +558,170 @@ function jsonResult(payload) {
   };
 }
 
+function parseJsonToolResult(result) {
+  const text = result?.content?.find((item) => item.type === 'text')?.text;
+  if (!text) {
+    throw new Error('Tool returned no text JSON payload.');
+  }
+
+  return JSON.parse(text);
+}
+
+async function runtimeSelfCheck() {
+  let syncResult;
+  let syncError = null;
+
+  try {
+    syncResult = await syncProductMcp({ force: true });
+  } catch (error) {
+    syncError = error instanceof Error ? error.message : String(error);
+  }
+
+  let childConfigStatus = null;
+  let childConfigError = null;
+
+  try {
+    const childResult = await callChildTool('product_bridge_config_status', {});
+    childConfigStatus = parseJsonToolResult(childResult);
+  } catch (error) {
+    childConfigError = error instanceof Error ? error.message : String(error);
+  }
+
+  const status = runtimeStatus();
+  const expectedConfig = readRuntimeBridgeConfigPreview();
+  const sourceHash = status.bridgeConfig.sourceHash;
+  const runtimeHash = status.bridgeConfig.runtimeHash;
+  const childHash = status.childRuntime.bridgeConfigHash;
+
+  const checks = [
+    {
+      name: 'runtime_config_copied',
+      ok: Boolean(sourceHash && runtimeHash && sourceHash === runtimeHash),
+      detail: { sourceHash, runtimeHash }
+    },
+    {
+      name: 'child_runtime_running',
+      ok: Boolean(status.childRuntime.running),
+      detail: {
+        startedAt: status.childRuntime.startedAt,
+        commit: status.childRuntime.commit
+      }
+    },
+    {
+      name: 'child_loaded_runtime_config',
+      ok: Boolean(runtimeHash && childHash && runtimeHash === childHash),
+      detail: {
+        runtimeHash,
+        childHash
+      }
+    },
+    {
+      name: 'child_config_status_available',
+      ok: Boolean(childConfigStatus?.ok),
+      detail: childConfigError ? { error: childConfigError } : { available: true }
+    },
+    {
+      name: 'expected_config_resolved',
+      ok: Boolean(expectedConfig.ok),
+      detail: expectedConfig.ok ? { environment: expectedConfig.environment, projectUrl: expectedConfig.projectUrl } : expectedConfig
+    }
+  ];
+
+  if (childConfigStatus?.ok && expectedConfig.ok) {
+    checks.push(
+      {
+        name: 'child_uses_runtime_config_path',
+        ok: childConfigStatus.bridge?.configPath === runtimeBridgeConfig,
+        detail: {
+          expected: runtimeBridgeConfig,
+          actual: childConfigStatus.bridge?.configPath
+        }
+      },
+      {
+        name: 'child_project_url_matches_expected',
+        ok: childConfigStatus.projectUrl === expectedConfig.projectUrl,
+        detail: {
+          expected: expectedConfig.projectUrl,
+          actual: childConfigStatus.projectUrl
+        }
+      },
+      {
+        name: 'child_match_url_prefixes_match_expected',
+        ok: arraysEqual(childConfigStatus.matchUrlPrefixes || [], expectedConfig.matchUrlPrefixes || []),
+        detail: {
+          expected: expectedConfig.matchUrlPrefixes,
+          actual: childConfigStatus.matchUrlPrefixes
+        }
+      }
+    );
+  }
+
+  const ok = checks.every((check) => check.ok);
+
+  return {
+    ok,
+    code: ok ? 'PRODUCT_RUNTIME_SELF_CHECK_OK' : 'PRODUCT_RUNTIME_SELF_CHECK_FAILED',
+    readsChromeToken: false,
+    readsRemoteErp: false,
+    autoFixAttempted: {
+      syncProductMcp: true,
+      syncBridgeConfig: true,
+      restartChildRuntimeOnChange: true
+    },
+    sync: syncResult
+      ? {
+          ok: true,
+          ...syncResult
+        }
+      : {
+          ok: false,
+          error: syncError
+        },
+    expectedConfig,
+    effectiveConfig: childConfigStatus
+      ? {
+          environment: childConfigStatus.environment,
+          projectUrl: childConfigStatus.projectUrl,
+          matchUrlPrefixes: childConfigStatus.matchUrlPrefixes,
+          tokenStorageKey: childConfigStatus.tokenStorageKey,
+          configPath: childConfigStatus.bridge?.configPath,
+          bridgeVersion: childConfigStatus.bridge?.version
+        }
+      : null,
+    checks,
+    runtime: status,
+    agentGuidance: ok
+      ? {
+          conclusion: 'Runtime and bridge config are active. Continue with product_auth_status when ERP login state is needed.',
+          nextToolCall: {
+            name: 'product_auth_status',
+            arguments: {}
+          }
+        }
+      : {
+          conclusion:
+            'Runtime self-check failed after automatic refresh. Do not ask the user to inspect hashes or files. If a second self-check in the same thread still fails, ask the user only to reconnect/restart Codex or the plugin, then continue in this thread.',
+          nextToolCall: {
+            name: 'product_runtime_self_check',
+            arguments: {}
+          }
+        }
+  };
+}
+
 function proxyTools() {
   return [
+    {
+      name: 'product_runtime_self_check',
+      title: 'Product MCP Runtime Self Check',
+      description:
+        'Self-check and self-heal the Product MCP runtime without reading Chrome or ERP token. Verifies plugin config hashes, child runtime config, effective project URL, and URL prefixes so the AI can report the conclusion instead of asking the user to validate.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      }
+    },
     {
       name: 'product_runtime_status',
       title: 'Product MCP Runtime Status',
@@ -531,6 +794,10 @@ async function callChildTool(name, args) {
 async function callTool(request) {
   const name = request.params.name;
   const args = request.params.arguments ?? {};
+
+  if (name === 'product_runtime_self_check') {
+    return jsonResult(await runtimeSelfCheck());
+  }
 
   if (name === 'product_runtime_status') {
     return jsonResult(runtimeStatus());
