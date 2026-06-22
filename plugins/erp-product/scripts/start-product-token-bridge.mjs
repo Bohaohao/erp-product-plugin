@@ -1,9 +1,10 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { createHash } from 'node:crypto';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const pluginRoot = dirname(scriptDir);
@@ -11,8 +12,9 @@ const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
 const productMcpRef = 'master';
 const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
-const bridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
-const proxyVersion = '0.2.6';
+const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
+const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
+const proxyVersion = '0.2.7';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 
 let sdk;
@@ -23,6 +25,7 @@ let childClient;
 let childTransport;
 let childStartedAt;
 let childRuntimeCommit;
+let childBridgeConfigHash;
 let childToolsCache = [];
 let restartCount = 0;
 let lastSyncMs = 0;
@@ -89,6 +92,28 @@ function gitHeadSafe(dir) {
   } catch {
     return null;
   }
+}
+
+function fileHash(path) {
+  try {
+    return createHash('sha256').update(readFileSync(path)).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function syncRuntimeBridgeConfig() {
+  mkdirSync(dirname(runtimeBridgeConfig), { recursive: true });
+
+  const source = readFileSync(sourceBridgeConfig);
+  const nextHash = createHash('sha256').update(source).digest('hex');
+  const currentHash = fileHash(runtimeBridgeConfig);
+
+  if (currentHash !== nextHash) {
+    writeFileSync(runtimeBridgeConfig, source);
+  }
+
+  return nextHash;
 }
 
 function tryResolveGitProductMcp() {
@@ -206,6 +231,7 @@ async function stopChildRuntime() {
   childToolsCache = [];
   childStartedAt = undefined;
   childRuntimeCommit = undefined;
+  childBridgeConfigHash = undefined;
 
   if (client) {
     await client.close().catch((error) => {
@@ -223,10 +249,11 @@ async function startChildRuntime() {
   if (!existsSync(bridgeEntry)) {
     ensureProductMcp({ ...productMcp, updated: true });
   }
+  const bridgeConfigHash = syncRuntimeBridgeConfig();
 
   const transport = new sdk.StdioClientTransport({
     command: process.execPath,
-    args: [bridgeEntry, '--config', bridgeConfig],
+    args: [bridgeEntry, '--config', runtimeBridgeConfig],
     cwd: productMcpDir,
     env: processEnv(),
     stderr: 'inherit'
@@ -256,6 +283,7 @@ async function startChildRuntime() {
   childTransport = transport;
   childStartedAt = new Date().toISOString();
   childRuntimeCommit = gitHeadSafe(productMcpDir);
+  childBridgeConfigHash = bridgeConfigHash;
   childToolsCache = [];
 
   process.stderr.write(`Product MCP child runtime started: ${productMcpDir}\n`);
@@ -281,8 +309,11 @@ async function ensureChildRuntime() {
 
 async function syncProductMcp(options = {}) {
   const force = Boolean(options.force);
+  const currentConfigHash = syncRuntimeBridgeConfig();
+  const currentBridgeConfigChanged =
+    Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== currentConfigHash;
   const now = Date.now();
-  if (!force && now - lastSyncMs < runtimeUpdateCheckIntervalMs) {
+  if (!force && !currentBridgeConfigChanged && now - lastSyncMs < runtimeUpdateCheckIntervalMs) {
     return {
       checked: false,
       updated: false,
@@ -292,8 +323,11 @@ async function syncProductMcp(options = {}) {
   }
 
   return withRuntimeLock(async () => {
+    const lockedConfigHash = syncRuntimeBridgeConfig();
+    const lockedBridgeConfigChanged =
+      Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== lockedConfigHash;
     const lockedNow = Date.now();
-    if (!force && lockedNow - lastSyncMs < runtimeUpdateCheckIntervalMs) {
+    if (!force && !lockedBridgeConfigChanged && lockedNow - lastSyncMs < runtimeUpdateCheckIntervalMs) {
       return {
         checked: false,
         updated: false,
@@ -304,20 +338,30 @@ async function syncProductMcp(options = {}) {
 
     const beforeDir = productMcpDir;
     const beforeCommit = gitHeadSafe(productMcpDir);
+    const beforeConfigHash = fileHash(runtimeBridgeConfig);
 
     try {
       const nextProductMcp = resolveProductMcp();
       ensureProductMcp(nextProductMcp);
+      const afterConfigHash = syncRuntimeBridgeConfig();
 
       productMcp = nextProductMcp;
       productMcpDir = nextProductMcp.dir;
 
       const afterCommit = gitHeadSafe(productMcpDir);
       const updated = nextProductMcp.updated || beforeDir !== productMcpDir || beforeCommit !== afterCommit;
+      const bridgeConfigChanged =
+        Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== afterConfigHash;
       let restarted = false;
 
-      if (updated && childClient) {
-        await restartChildRuntime('Product MCP checkout changed');
+      if ((updated || bridgeConfigChanged) && childClient) {
+        await restartChildRuntime(
+          updated && bridgeConfigChanged
+            ? 'Product MCP checkout and bridge config changed'
+            : updated
+              ? 'Product MCP checkout changed'
+              : 'bridge config changed'
+        );
         restarted = true;
         await serverInstance?.sendToolListChanged?.().catch(() => undefined);
       }
@@ -338,6 +382,9 @@ async function syncProductMcp(options = {}) {
         source: nextProductMcp.source,
         beforeCommit,
         afterCommit,
+        beforeConfigHash,
+        afterConfigHash,
+        bridgeConfigChanged,
         dir: productMcpDir
       };
     } catch (error) {
@@ -380,10 +427,16 @@ function runtimeStatus(extra = {}) {
       pid: childTransport?.pid ?? null,
       startedAt: childStartedAt ?? null,
       commit: childRuntimeCommit ?? null,
+      bridgeConfigHash: childBridgeConfigHash ?? null,
       restartCount,
       cachedToolCount: childToolsCache.length
     },
-    bridgeConfig,
+    bridgeConfig: {
+      sourcePath: sourceBridgeConfig,
+      runtimePath: runtimeBridgeConfig,
+      sourceHash: fileHash(sourceBridgeConfig),
+      runtimeHash: fileHash(runtimeBridgeConfig)
+    },
     threadContinuity: {
       productMcpRuntimeHotRefresh: true,
       requiresNewThreadForProductMcpRuntimeUpdates: false,
@@ -550,6 +603,7 @@ process.on('SIGTERM', () => {
   shutdown().finally(() => process.exit(0));
 });
 
+syncRuntimeBridgeConfig();
 productMcp = resolveProductMcp();
 productMcpDir = productMcp.dir;
 ensureProductMcp(productMcp);

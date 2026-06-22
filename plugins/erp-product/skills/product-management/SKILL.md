@@ -35,6 +35,8 @@ For Product MCP runtime checks, call `product_runtime_status`. For immediate Pro
 
 Do not call `product_runtime_refresh` as a routine step before every lookup, upload, or create action. A child runtime restart clears the in-process token cache and Chrome DevTools MCP connection, so the next token read may need Chrome again. Use refresh only when the user asks for an update, runtime status indicates an outdated checkout, or a Product MCP tool is genuinely missing/stale.
 
+If an auth or Chrome-tab error still mentions an old `projectUrl` after the user has updated or reinstalled the plugin, call `product_runtime_status` and compare `bridgeConfig.sourceHash`, `bridgeConfig.runtimeHash`, and `childRuntime.bridgeConfigHash`. Then call `product_runtime_refresh` once; if the old URL remains after refresh, tell the user the current Codex MCP process is still the old plugin process and they should reconnect/restart the plugin or Codex, then return to the same thread.
+
 If the backend returns 401/403, the bridge refreshes the Chrome token once and retries. If 401/403 keeps happening in a short window, do not keep retrying tools in a loop; report the backend/auth error and ask the user to refresh or log in to ERP before continuing.
 
 If the user is upgrading from an already-running pre-proxy plugin process, that old process cannot load new proxy code retroactively. If a reconnect is needed, ask the user to preserve and return to the same thread after reconnecting or restarting Codex. Before any disruptive action, summarize the current product workflow state in the conversation so the same thread can continue safely.
