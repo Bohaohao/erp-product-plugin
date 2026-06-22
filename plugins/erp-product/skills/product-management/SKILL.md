@@ -9,7 +9,7 @@ description: ERP product creation workflow through Product MCP. Use when the use
 
 Use the `erp-product` MCP tools to turn local ERP product materials into a checked, uploaded, created, and verified product. The local bridge reads the user's Chrome ERP login token; never ask the user to paste or reveal the token.
 
-Use the local bridge as the entry point for Codex/local package workflows. Local files must be uploaded with `product_upload_file` first; do not send local paths, file bytes, or large base64 payloads to the remote HTTP MCP or to `product_create`.
+Use the local bridge as the entry point for Codex/local package workflows. Local files must be uploaded with `product_upload_file` first; do not send local paths, file bytes, or large base64 payloads to any MCP request or to `product_create`. Product MCP bridge `0.1.8` and later uses the local bridge to call the ERP backend directly for reference lookups, detail checks, uploads, and product creation; the remote MCP server is not part of the Codex default path.
 
 Use only the published `product_*` MCP tools for Chrome login checks, token reads, Chrome DevTools page matching, Product MCP SDK access, backend lookups, uploads, creation, and verification. Do not write temporary scripts to connect to Chrome DevTools MCP, parse Chrome page lists, read ERP tokens, import Product MCP internal modules, or call internal backend helpers. Those scripts bypass the runtime launcher, token cache, page-list parser, SDK resolution, auth refresh, config sync, and standard error handling, and can reintroduce bugs already fixed in Product MCP.
 
@@ -81,7 +81,7 @@ Before calling `product_create`, summarize the product name, category, unit, sup
 
 `product_create` should receive business fields and already-uploaded OSS URLs only. Never pass local paths, raw file content, or base64 file payloads to it.
 
-If `product_create` returns `Payload Too Large`, do not bypass the MCP workflow manually. First call `product_runtime_self_check` to make the Runtime Proxy pull the latest Product MCP. Product MCP bridge `0.1.7` and later submits `product_create` directly from the local bridge to the ERP backend, avoiding the remote MCP gateway body-size limit while preserving Chrome-token handling, auth refresh, field normalization, and standard tool results.
+If `product_create` returns `Payload Too Large`, do not bypass the MCP workflow manually. First call `product_runtime_self_check` to make the Runtime Proxy pull the latest Product MCP. Product MCP bridge `0.1.8` and later submits Codex reference lookups, detail checks, uploads, and `product_create` directly from the local bridge to the ERP backend, avoiding the remote MCP gateway body-size limit while preserving Chrome-token handling, auth refresh, field normalization, and standard tool results.
 
 After creation, call `product_get_detail` with the returned product ID to verify at least base and media sections. Report the product ID plus edit/view paths when available.
 
