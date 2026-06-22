@@ -77,6 +77,8 @@ Before calling `product_create`, summarize the product name, category, unit, sup
 
 `product_create` should receive business fields and already-uploaded OSS URLs only. Never pass local paths, raw file content, or base64 file payloads to it.
 
+If `product_create` returns `Payload Too Large`, do not write a temporary script, do not call internal modules directly, and do not bypass the MCP workflow manually. First call `product_runtime_self_check` to make the Runtime Proxy pull the latest Product MCP. Product MCP bridge `0.1.7` and later submits `product_create` directly from the local bridge to the ERP backend, avoiding the remote MCP gateway body-size limit while preserving Chrome-token handling, auth refresh, field normalization, and standard tool results.
+
 After creation, call `product_get_detail` with the returned product ID to verify at least base and media sections. Report the product ID plus edit/view paths when available.
 
 ## Direct Tool Use
