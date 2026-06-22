@@ -275,11 +275,11 @@ function ensureProductMcp(selection) {
   process.stderr.write(`Using Product MCP (${selection.source}): ${selection.dir}\n`);
 
   if (selection.updated || !existsSync(bridgeEntry) || buildIsStale) {
-    runNpm(['ci'], selection.dir);
+    runNpm(['install'], selection.dir);
     runNpm(['run', 'build'], selection.dir);
     rebuilt = true;
   } else if (!existsSync(runtimeDependency)) {
-    runNpm(['ci', '--omit=dev'], selection.dir);
+    runNpm(['install', '--omit=dev'], selection.dir);
   }
 
   return {

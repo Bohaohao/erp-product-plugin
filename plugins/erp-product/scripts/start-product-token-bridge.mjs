@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.4';
+const launcherVersion = '0.3.5';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -139,7 +139,7 @@ function resolveProductMcpForSdk() {
 function ensureProductMcpSdk() {
   const productMcpDir = resolveProductMcpForSdk();
   if (!existsSync(productMcpRuntimeDependency(productMcpDir))) {
-    runNpm(['ci', '--omit=dev'], productMcpDir);
+    runNpm(['install', '--omit=dev'], productMcpDir);
   }
   return productMcpDir;
 }
