@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.2';
+const proxyVersion = '0.3.3';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -1217,12 +1217,17 @@ async function shutdown() {
   await stopChildRuntime();
 }
 
-process.on('SIGINT', () => {
+let shuttingDown = false;
+function shutdownAndExit() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   shutdown().finally(() => process.exit(0));
-});
-process.on('SIGTERM', () => {
-  shutdown().finally(() => process.exit(0));
-});
+}
+
+process.on('SIGINT', shutdownAndExit);
+process.on('SIGTERM', shutdownAndExit);
+process.stdin.on('end', shutdownAndExit);
+process.stdin.on('close', shutdownAndExit);
 
 try {
   syncRuntimeBridgeConfig();

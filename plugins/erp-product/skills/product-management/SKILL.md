@@ -25,6 +25,8 @@ ERP Product plugin `0.3.12` and later auto-heals npm `ENOTEMPTY`/rename failures
 
 ERP Product plugin `0.3.13` and later isolates plugin-managed npm installs to `~/.erp-product/npm-cache` and retries with a temporary isolated cache if that cache fails. If an error mentions the user's global `~/.npm/_cacache`, instruct the user to apply or hot-refresh to `0.3.13+`; do not ask them to fix global npm cache permissions before the isolated-cache retry has been attempted.
 
+ERP Product plugin `0.3.14` and later closes downstream Product MCP / chrome-devtools-mcp child processes when the Codex stdio connection closes. If diagnostics show multiple Product `localBridge` or `chrome-devtools-mcp` chains on one Mac after Codex restarts, treat that as an old orphan-process symptom. The AI Agent should clean up only stale ERP Product child chains when it has process-control access, then run `product_runtime_self_check` and `product_auth_status`; ordinary users should not be asked to inspect or kill processes themselves.
+
 ## First Step
 
 Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.

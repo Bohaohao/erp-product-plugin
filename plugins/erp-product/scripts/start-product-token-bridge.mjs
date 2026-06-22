@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.13';
+const launcherVersion = '0.3.14';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -1403,11 +1403,16 @@ async function shutdown() {
   await stopRuntimeChild();
 }
 
-process.on('SIGINT', () => {
+let shuttingDown = false;
+function shutdownAndExit() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   shutdown().finally(() => process.exit(0));
-});
-process.on('SIGTERM', () => {
-  shutdown().finally(() => process.exit(0));
-});
+}
+
+process.on('SIGINT', shutdownAndExit);
+process.on('SIGTERM', shutdownAndExit);
+process.stdin.on('end', shutdownAndExit);
+process.stdin.on('close', shutdownAndExit);
 
 await startLauncherServer();
