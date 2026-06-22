@@ -21,6 +21,8 @@ ERP Product plugin `0.3.11` and later returns startup failure attribution fields
 
 If startup eventually succeeds by falling back to a cached checkout or sibling Product MCP, inspect `dependencies.warnings` and `refresh.dependencies.warnings`. Mention the degraded stage and fallback in the final status when it materially explains a slow startup or stale-code risk, while making clear that the current runtime recovered.
 
+ERP Product plugin `0.3.12` and later auto-heals npm `ENOTEMPTY`/rename failures during Product MCP dependency installation by deleting the dirty `node_modules` paths reported by npm and retrying once. If the retry still fails, report the final `errorStage`, `errorReason`, and cleaned-artifact warning; do not ask ordinary users to manually delete cache directories unless the automated retry has already failed.
+
 ## First Step
 
 Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.

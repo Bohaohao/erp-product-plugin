@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.11';
+const launcherVersion = '0.3.12';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -164,6 +164,57 @@ function recordDependencyWarning(error) {
   return diagnostic;
 }
 
+function isRecoverableNpmInstallError(error) {
+  const diagnostic = diagnosticFromError(error);
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`.toLowerCase();
+  return /enotempty|eexist|enotdir|directory not empty|rename/.test(text) && /node_modules|npm/.test(text);
+}
+
+function candidateNpmCleanupPaths(cwd, diagnostic) {
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`;
+  const candidates = new Set();
+  const nodeModulesDir = join(cwd, 'node_modules');
+  const pathPattern = /(?:^|\s)(?:path|dest)\s+([^\r\n]+)/gim;
+  let match;
+
+  while ((match = pathPattern.exec(text))) {
+    const candidate = match[1].trim().replace(/^["']|["']$/g, '');
+    if (candidate.includes('node_modules')) candidates.add(resolve(candidate));
+  }
+
+  try {
+    if (existsSync(nodeModulesDir)) {
+      for (const entry of readdirSync(nodeModulesDir)) {
+        if (/^\.[^/\\]+-[A-Za-z0-9_-]+$/.test(entry)) {
+          candidates.add(join(nodeModulesDir, entry));
+        }
+      }
+    }
+  } catch {
+    // Ignore unreadable node_modules; the original npm error remains the source of truth.
+  }
+
+  const root = resolve(cwd);
+  return [...candidates].filter((candidate) => {
+    const resolved = resolve(candidate);
+    return resolved === root || resolved.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`);
+  });
+}
+
+function cleanDirtyNodeModules(cwd, diagnostic) {
+  const cleaned = [];
+  for (const target of candidateNpmCleanupPaths(cwd, diagnostic)) {
+    try {
+      if (!existsSync(target)) continue;
+      rmSync(target, { recursive: true, force: true });
+      cleaned.push(target);
+    } catch (error) {
+      process.stderr.write(`Failed to clean npm dependency artifact ${target}: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+  return cleaned;
+}
+
 function dependencyFailureError(status = dependencyStatus) {
   const diagnostic = status.diagnostic || diagnosticFromError(status.error || 'ERP Product runtime dependencies are not ready.');
   const error = new Error(diagnostic.reason || 'ERP Product runtime dependencies are not ready.');
@@ -273,11 +324,27 @@ function nodeManagerPathEntries(home = homedir()) {
 }
 
 function runNpm(args, cwd, options = {}) {
-  if (process.platform === 'win32') {
-    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd, options);
-  }
+  const command = process.platform === 'win32' ? 'cmd' : 'npm';
+  const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args;
 
-  return run('npm', args, cwd, options);
+  try {
+    return run(command, commandArgs, cwd, options);
+  } catch (error) {
+    if (options.retryDirtyNodeModules === false || !isRecoverableNpmInstallError(error)) throw error;
+
+    const diagnostic = recordDependencyWarning(error);
+    const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
+    if (!cleaned.length) throw error;
+    diagnostic.cleanedArtifacts = cleaned;
+
+    process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
+    return run(command, commandArgs, cwd, {
+      ...options,
+      stage: `${options.stage || 'npm_install'}_retry_after_clean`,
+      action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`,
+      cleanedArtifacts: cleaned
+    });
+  }
 }
 
 function gitHead(dir, options = {}) {

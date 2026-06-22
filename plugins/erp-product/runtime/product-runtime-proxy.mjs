@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -14,7 +14,7 @@ const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.0';
+const proxyVersion = '0.3.1';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -177,12 +177,78 @@ function writeStartupFailure(error) {
   process.stderr.write(`${JSON.stringify({ code: 'ERP_PRODUCT_RUNTIME_PROXY_STARTUP_FAILED', diagnostic })}\n`);
 }
 
-function runNpm(args, cwd, options = {}) {
-  if (process.platform === 'win32') {
-    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd, options);
+function isRecoverableNpmInstallError(error) {
+  const diagnostic = diagnosticFromError(error);
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`.toLowerCase();
+  return /enotempty|eexist|enotdir|directory not empty|rename/.test(text) && /node_modules|npm/.test(text);
+}
+
+function candidateNpmCleanupPaths(cwd, diagnostic) {
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`;
+  const candidates = new Set();
+  const nodeModulesDir = join(cwd, 'node_modules');
+  const pathPattern = /(?:^|\s)(?:path|dest)\s+([^\r\n]+)/gim;
+  let match;
+
+  while ((match = pathPattern.exec(text))) {
+    const candidate = match[1].trim().replace(/^["']|["']$/g, '');
+    if (candidate.includes('node_modules')) candidates.add(resolve(candidate));
   }
 
-  return run('npm', args, cwd, options);
+  try {
+    if (existsSync(nodeModulesDir)) {
+      for (const entry of readdirSync(nodeModulesDir)) {
+        if (/^\.[^/\\]+-[A-Za-z0-9_-]+$/.test(entry)) {
+          candidates.add(join(nodeModulesDir, entry));
+        }
+      }
+    }
+  } catch {
+    // Ignore unreadable node_modules; the original npm error remains the source of truth.
+  }
+
+  const root = resolve(cwd);
+  return [...candidates].filter((candidate) => {
+    const resolved = resolve(candidate);
+    return resolved === root || resolved.startsWith(`${root}${process.platform === 'win32' ? '\\' : '/'}`);
+  });
+}
+
+function cleanDirtyNodeModules(cwd, diagnostic) {
+  const cleaned = [];
+  for (const target of candidateNpmCleanupPaths(cwd, diagnostic)) {
+    try {
+      if (!existsSync(target)) continue;
+      rmSync(target, { recursive: true, force: true });
+      cleaned.push(target);
+    } catch (error) {
+      process.stderr.write(`Failed to clean npm dependency artifact ${target}: ${error instanceof Error ? error.message : String(error)}\n`);
+    }
+  }
+  return cleaned;
+}
+
+function runNpm(args, cwd, options = {}) {
+  const command = process.platform === 'win32' ? 'cmd' : 'npm';
+  const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args;
+
+  try {
+    return run(command, commandArgs, cwd, options);
+  } catch (error) {
+    if (options.retryDirtyNodeModules === false || !isRecoverableNpmInstallError(error)) throw error;
+
+    const diagnostic = diagnosticFromError(error);
+    const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
+    if (!cleaned.length) throw error;
+    diagnostic.cleanedArtifacts = cleaned;
+
+    process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
+    return run(command, commandArgs, cwd, {
+      ...options,
+      stage: `${options.stage || 'npm_install'}_retry_after_clean`,
+      action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`
+    });
+  }
 }
 
 function hasProductMcp(dir) {
