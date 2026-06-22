@@ -13,7 +13,7 @@ Use the local bridge as the entry point for Codex/local package workflows. Local
 
 ## First Step
 
-Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. This self-check does not read Chrome or the ERP token; it verifies and refreshes the Product MCP runtime and effective bridge config on behalf of the user. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.
+Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.
 
 Call `product_auth_status` after runtime self-check passes and before any backend lookup, upload, or create operation. This preflights and warms `chrome-devtools-mcp` through npm before checking the Chrome ERP login token.
 
@@ -38,11 +38,13 @@ Do not tell the user to abandon the current thread because the plugin, marketpla
 
 The AI Agent owns runtime verification. Do not ask the user to inspect versions, hashes, config files, terminal output, or MCP status fields. Use `product_runtime_self_check` yourself, then report the conclusion in plain language. Ask the user only for actions that require their local UI or credentials, such as logging in to ERP, refreshing the ERP page, allowing Chrome remote debugging, or reconnecting/restarting Codex when the current MCP process is already stale.
 
-For Product MCP runtime checks, call `product_runtime_status`. For immediate Product MCP runtime updates, call `product_runtime_refresh`; the plugin proxy can refresh or restart the Product MCP child runtime while preserving the current Codex thread.
+For Product MCP runtime checks, call `product_runtime_status`. For immediate Product MCP runtime updates, call `product_runtime_refresh`; the plugin runtime proxy can refresh or restart the Product MCP child runtime while preserving the current Codex thread. For lower-level launcher diagnostics only, use `product_runtime_launcher_status`; for an explicit plugin runtime proxy update, use `product_runtime_launcher_refresh`.
 
 Do not call `product_runtime_refresh` as a routine step before every lookup, upload, or create action. A child runtime restart clears the in-process token cache and Chrome DevTools MCP connection, so the next token read may need Chrome again. Use refresh only when the user asks for an update, runtime status indicates an outdated checkout, or a Product MCP tool is genuinely missing/stale.
 
 Routine lookup, upload, and create calls may still check the fixed Product MCP Git source, but they must not restart an already running child runtime just to apply a Product MCP checkout update. The proxy should defer that restart and keep the current child process alive so the in-process token cache survives the active product workflow. Apply deferred updates through `product_runtime_self_check` or `product_runtime_refresh` before the next workflow, or when a stale/missing tool is actually blocking progress.
+
+Routine lookup, upload, and create calls may also check the fixed ERP Product plugin runtime Git source through the Runtime Launcher, but they must not restart an already running runtime proxy just to apply a plugin runtime update. Apply deferred plugin runtime updates through `product_runtime_self_check` before the next workflow, or through `product_runtime_launcher_refresh` only when a stale launcher/runtime issue is blocking progress.
 
 If an auth or Chrome-tab error still mentions an old `projectUrl` after the plugin was updated or reinstalled, call `product_runtime_self_check` once. If it still reports stale or mismatched config after its automatic refresh, conclude that the current Codex MCP process is still the old plugin process; ask the user only to reconnect/restart the plugin or Codex, then continue in the same thread after reconnection.
 
