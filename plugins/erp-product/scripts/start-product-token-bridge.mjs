@@ -14,7 +14,7 @@ const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.2.10';
+const proxyVersion = '0.2.11';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 
 let sdk;
@@ -28,6 +28,7 @@ let childRuntimeCommit;
 let childBridgeConfigHash;
 let childToolsCache = [];
 let restartCount = 0;
+let pendingChildRuntimeRestart = null;
 let lastSyncMs = 0;
 let lastSyncStatus = {
   checkedAt: null,
@@ -393,6 +394,7 @@ async function restartChildRuntime(reason) {
   await stopChildRuntime();
   await startChildRuntime();
   restartCount += 1;
+  pendingChildRuntimeRestart = null;
 }
 
 async function ensureChildRuntime() {
@@ -408,6 +410,7 @@ async function ensureChildRuntime() {
 
 async function syncProductMcp(options = {}) {
   const force = Boolean(options.force);
+  const allowChildRestart = options.allowChildRestart !== false;
   const currentConfigHash = syncRuntimeBridgeConfig();
   const currentBridgeConfigChanged =
     Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== currentConfigHash;
@@ -448,21 +451,36 @@ async function syncProductMcp(options = {}) {
       productMcpDir = nextProductMcp.dir;
 
       const afterCommit = gitHeadSafe(productMcpDir);
-      const updated = nextProductMcp.updated || ensureResult.rebuilt || beforeDir !== productMcpDir || beforeCommit !== afterCommit;
+      const childRuntimeOutdated =
+        Boolean(childClient) && Boolean(childRuntimeCommit) && Boolean(afterCommit) && childRuntimeCommit !== afterCommit;
+      const updated =
+        nextProductMcp.updated || ensureResult.rebuilt || beforeDir !== productMcpDir || beforeCommit !== afterCommit || childRuntimeOutdated;
       const bridgeConfigChanged =
         Boolean(childClient) && Boolean(childBridgeConfigHash) && childBridgeConfigHash !== afterConfigHash;
       let restarted = false;
+      const restartReason =
+        updated && bridgeConfigChanged
+          ? 'Product MCP checkout and bridge config changed'
+          : updated
+            ? 'Product MCP checkout changed'
+            : 'bridge config changed';
 
       if ((updated || bridgeConfigChanged) && childClient) {
-        await restartChildRuntime(
-          updated && bridgeConfigChanged
-            ? 'Product MCP checkout and bridge config changed'
-            : updated
-              ? 'Product MCP checkout changed'
-              : 'bridge config changed'
-        );
-        restarted = true;
-        await serverInstance?.sendToolListChanged?.().catch(() => undefined);
+        if (!allowChildRestart && updated && !bridgeConfigChanged) {
+          pendingChildRuntimeRestart = {
+            reason: restartReason,
+            detectedAt: new Date().toISOString(),
+            beforeCommit: childRuntimeCommit ?? beforeCommit,
+            afterCommit,
+            dir: productMcpDir,
+            note:
+              'Product MCP checkout updated, but the running child runtime was kept alive to preserve the in-process Chrome token cache. Call product_runtime_self_check or product_runtime_refresh to apply it immediately.'
+          };
+        } else {
+          await restartChildRuntime(restartReason);
+          restarted = true;
+          await serverInstance?.sendToolListChanged?.().catch(() => undefined);
+        }
       }
 
       lastSyncMs = Date.now();
@@ -484,6 +502,8 @@ async function syncProductMcp(options = {}) {
         beforeConfigHash,
         afterConfigHash,
         bridgeConfigChanged,
+        childRuntimeOutdated,
+        restartDeferred: Boolean(pendingChildRuntimeRestart),
         rebuilt: ensureResult.rebuilt,
         buildIsStale: ensureResult.buildIsStale,
         dir: productMcpDir
@@ -530,6 +550,7 @@ function runtimeStatus(extra = {}) {
       commit: childRuntimeCommit ?? null,
       bridgeConfigHash: childBridgeConfigHash ?? null,
       restartCount,
+      pendingRestart: pendingChildRuntimeRestart,
       cachedToolCount: childToolsCache.length
     },
     bridgeConfig: {
@@ -761,7 +782,7 @@ function isConnectionError(error) {
 }
 
 async function listTools() {
-  await syncProductMcp();
+  await syncProductMcp({ allowChildRestart: false });
   const child = await ensureChildRuntime();
   const result = await child.listTools();
   childToolsCache = result.tools ?? [];
@@ -773,7 +794,7 @@ async function listTools() {
 }
 
 async function callChildTool(name, args) {
-  await syncProductMcp();
+  await syncProductMcp({ allowChildRestart: false });
 
   let child = await ensureChildRuntime();
   try {
