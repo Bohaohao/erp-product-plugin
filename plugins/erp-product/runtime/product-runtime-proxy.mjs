@@ -12,9 +12,10 @@ const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
 const productMcpRef = 'master';
 const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
+const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.1';
+const proxyVersion = '0.3.2';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -57,14 +58,18 @@ function run(command, args, cwd, options = {}) {
       detail: {
         command: commandLine(command, args),
         cwd,
-        timeoutMs
+        timeoutMs,
+        ...(options.detail || {})
       }
     };
   }
 
   const result = spawnSync(command, args, {
     cwd,
-    env: processEnv(),
+    env: {
+      ...processEnv(),
+      ...(options.env || {})
+    },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: timeoutMs
@@ -86,7 +91,8 @@ function run(command, args, cwd, options = {}) {
         timedOut,
         signal: result.signal,
         stdout: result.stdout,
-        stderr: result.stderr
+        stderr: result.stderr,
+        detail: options.detail
       }
     );
   }
@@ -110,7 +116,8 @@ function run(command, args, cwd, options = {}) {
       exitCode: result.status,
       signal: result.signal,
       stdout: result.stdout,
-      stderr: result.stderr
+      stderr: result.stderr,
+      detail: options.detail
     });
   }
 
@@ -156,6 +163,7 @@ function diagnosticFromError(error, fallback = {}) {
     kind: classifyFailure(message, fallback),
     command: fallback.command ? commandLine(fallback.command, fallback.args || []) : fallback.commandLine || startupStage.detail?.command || null,
     cwd: fallback.cwd || startupStage.detail?.cwd || null,
+    detail: fallback.detail || startupStage.detail || null,
     timeoutMs: fallback.timeoutMs || startupStage.detail?.timeoutMs || null,
     timedOut: Boolean(fallback.timedOut),
     exitCode: fallback.exitCode ?? null,
@@ -228,26 +236,76 @@ function cleanDirtyNodeModules(cwd, diagnostic) {
   return cleaned;
 }
 
+function isRecoverableNpmCacheError(error) {
+  const diagnostic = diagnosticFromError(error);
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`.toLowerCase();
+  return /npm|_cacache|cache/.test(text) && /eacces|eperm|permission denied|file exists|eexist/.test(text);
+}
+
+function npmEnv(cacheDir = npmCacheDir) {
+  mkdirSync(cacheDir, { recursive: true });
+  return {
+    npm_config_cache: cacheDir,
+    NPM_CONFIG_CACHE: cacheDir,
+    npm_config_update_notifier: 'false',
+    npm_config_fund: 'false',
+    npm_config_audit: 'false'
+  };
+}
+
 function runNpm(args, cwd, options = {}) {
   const command = process.platform === 'win32' ? 'cmd' : 'npm';
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args;
+  const baseNpmEnv = npmEnv();
+  const baseOptions = {
+    ...options,
+    env: {
+      ...baseNpmEnv,
+      ...(options.env || {})
+    },
+    detail: {
+      ...(options.detail || {}),
+      npmCache: baseNpmEnv.npm_config_cache
+    }
+  };
 
   try {
-    return run(command, commandArgs, cwd, options);
+    return run(command, commandArgs, cwd, baseOptions);
   } catch (error) {
-    if (options.retryDirtyNodeModules === false || !isRecoverableNpmInstallError(error)) throw error;
+    if (options.retryDirtyNodeModules !== false && isRecoverableNpmInstallError(error)) {
+      const diagnostic = diagnosticFromError(error);
+      const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
+      if (!cleaned.length) throw error;
+      diagnostic.cleanedArtifacts = cleaned;
 
-    const diagnostic = diagnosticFromError(error);
-    const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
-    if (!cleaned.length) throw error;
-    diagnostic.cleanedArtifacts = cleaned;
+      process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
+      return run(command, commandArgs, cwd, {
+        ...baseOptions,
+        stage: `${options.stage || 'npm_install'}_retry_after_clean`,
+        action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`
+      });
+    }
 
-    process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
-    return run(command, commandArgs, cwd, {
-      ...options,
-      stage: `${options.stage || 'npm_install'}_retry_after_clean`,
-      action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`
-    });
+    if (isRecoverableNpmCacheError(error)) {
+      const diagnostic = diagnosticFromError(error);
+      const retryCacheDir = join(homedir(), '.erp-product', `npm-cache-retry-${Date.now()}`);
+      process.stderr.write(`Switching npm cache after ${diagnostic.stage}: ${retryCacheDir}\n`);
+      return run(command, commandArgs, cwd, {
+        ...options,
+        env: {
+          ...npmEnv(retryCacheDir),
+          ...(options.env || {})
+        },
+        detail: {
+          ...(options.detail || {}),
+          npmCache: retryCacheDir
+        },
+        stage: `${options.stage || 'npm_install'}_retry_with_isolated_cache`,
+        action: `${options.action || 'npm install'} with an isolated ERP Product npm cache`
+      });
+    }
+
+    throw error;
   }
 }
 

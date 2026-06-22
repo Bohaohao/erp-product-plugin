@@ -7,13 +7,14 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.12';
+const launcherVersion = '0.3.13';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
 const productMcpRef = 'master';
 const cachedPluginRuntime = join(homedir(), '.erp-product', 'erp-product-plugin-runtime');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
+const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const siblingProductMcp = resolve(bundledPluginRoot, '..', '..', '..', 'product-mcp');
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const dependencyRetryDelayMs = 60 * 1000;
@@ -96,6 +97,7 @@ function diagnosticFromError(error, fallback = {}) {
     kind: classifyFailure(message, fallback),
     command: fallback.command ? commandLine(fallback.command, fallback.args || []) : fallback.commandLine || null,
     cwd: fallback.cwd || null,
+    detail: fallback.detail || null,
     timeoutMs: fallback.timeoutMs || null,
     timedOut: Boolean(fallback.timedOut),
     exitCode: fallback.exitCode ?? null,
@@ -215,6 +217,23 @@ function cleanDirtyNodeModules(cwd, diagnostic) {
   return cleaned;
 }
 
+function isRecoverableNpmCacheError(error) {
+  const diagnostic = diagnosticFromError(error);
+  const text = `${diagnostic.reason || ''}\n${diagnostic.stdout || ''}\n${diagnostic.stderr || ''}`.toLowerCase();
+  return /npm|_cacache|cache/.test(text) && /eacces|eperm|permission denied|file exists|eexist/.test(text);
+}
+
+function npmEnv(cacheDir = npmCacheDir) {
+  mkdirSync(cacheDir, { recursive: true });
+  return {
+    npm_config_cache: cacheDir,
+    NPM_CONFIG_CACHE: cacheDir,
+    npm_config_update_notifier: 'false',
+    npm_config_fund: 'false',
+    npm_config_audit: 'false'
+  };
+}
+
 function dependencyFailureError(status = dependencyStatus) {
   const diagnostic = status.diagnostic || diagnosticFromError(status.error || 'ERP Product runtime dependencies are not ready.');
   const error = new Error(diagnostic.reason || 'ERP Product runtime dependencies are not ready.');
@@ -230,13 +249,17 @@ function run(command, args, cwd, options = {}) {
     markDependencyStage(stage, action, {
       command: commandLine(command, args),
       cwd,
-      timeoutMs
+      timeoutMs,
+      ...(options.detail || {})
     });
   }
 
   const result = spawnSync(command, args, {
     cwd,
-    env: processEnv(),
+    env: {
+      ...processEnv(),
+      ...(options.env || {})
+    },
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: timeoutMs
@@ -256,7 +279,8 @@ function run(command, args, cwd, options = {}) {
         timedOut,
         signal: result.signal,
         stdout: result.stdout,
-        stderr: result.stderr
+        stderr: result.stderr,
+        detail: options.detail
       }
     );
   }
@@ -278,7 +302,8 @@ function run(command, args, cwd, options = {}) {
       exitCode: result.status,
       signal: result.signal,
       stdout: result.stdout,
-      stderr: result.stderr
+      stderr: result.stderr,
+      detail: options.detail
     });
   }
 
@@ -326,24 +351,57 @@ function nodeManagerPathEntries(home = homedir()) {
 function runNpm(args, cwd, options = {}) {
   const command = process.platform === 'win32' ? 'cmd' : 'npm';
   const commandArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm', ...args] : args;
+  const baseNpmEnv = npmEnv();
+  const baseOptions = {
+    ...options,
+    env: {
+      ...baseNpmEnv,
+      ...(options.env || {})
+    },
+    detail: {
+      ...(options.detail || {}),
+      npmCache: baseNpmEnv.npm_config_cache
+    }
+  };
 
   try {
-    return run(command, commandArgs, cwd, options);
+    return run(command, commandArgs, cwd, baseOptions);
   } catch (error) {
-    if (options.retryDirtyNodeModules === false || !isRecoverableNpmInstallError(error)) throw error;
+    if (options.retryDirtyNodeModules !== false && isRecoverableNpmInstallError(error)) {
+      const diagnostic = recordDependencyWarning(error);
+      const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
+      if (!cleaned.length) throw error;
+      diagnostic.cleanedArtifacts = cleaned;
 
-    const diagnostic = recordDependencyWarning(error);
-    const cleaned = cleanDirtyNodeModules(cwd, diagnostic);
-    if (!cleaned.length) throw error;
-    diagnostic.cleanedArtifacts = cleaned;
+      process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
+      return run(command, commandArgs, cwd, {
+        ...baseOptions,
+        stage: `${options.stage || 'npm_install'}_retry_after_clean`,
+        action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`,
+        cleanedArtifacts: cleaned
+      });
+    }
 
-    process.stderr.write(`Cleaned npm dependency artifacts after ${diagnostic.stage}: ${cleaned.join(', ')}\n`);
-    return run(command, commandArgs, cwd, {
-      ...options,
-      stage: `${options.stage || 'npm_install'}_retry_after_clean`,
-      action: `${options.action || 'npm install'} after cleaning dirty node_modules artifacts`,
-      cleanedArtifacts: cleaned
-    });
+    if (isRecoverableNpmCacheError(error)) {
+      const diagnostic = recordDependencyWarning(error);
+      const retryCacheDir = join(homedir(), '.erp-product', `npm-cache-retry-${Date.now()}`);
+      process.stderr.write(`Switching npm cache after ${diagnostic.stage}: ${retryCacheDir}\n`);
+      return run(command, commandArgs, cwd, {
+        ...options,
+        env: {
+          ...npmEnv(retryCacheDir),
+          ...(options.env || {})
+        },
+        detail: {
+          ...(options.detail || {}),
+          npmCache: retryCacheDir
+        },
+        stage: `${options.stage || 'npm_install'}_retry_with_isolated_cache`,
+        action: `${options.action || 'npm install'} with an isolated ERP Product npm cache`
+      });
+    }
+
+    throw error;
   }
 }
 
