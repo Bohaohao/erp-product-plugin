@@ -12,7 +12,7 @@ const productMcpRef = 'master';
 const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const bridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
-const proxyVersion = '0.2.5';
+const proxyVersion = '0.2.6';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 
 let sdk;
@@ -118,6 +118,11 @@ function tryResolveGitProductMcp() {
     };
   } catch (error) {
     process.stderr.write(`Product MCP git sync failed.\n${error.message}\n`);
+
+    if (hasProductMcp(siblingProductMcp)) {
+      process.stderr.write(`Using sibling Product MCP fallback after git sync failure: ${siblingProductMcp}\n`);
+      return { dir: siblingProductMcp, updated: false, source: 'sibling fallback after git sync failure' };
+    }
 
     if (hasProductMcp(cachedProductMcp) && existsSync(join(cachedProductMcp, '.git'))) {
       process.stderr.write(`Using existing cached Product MCP checkout: ${cachedProductMcp}\n`);
