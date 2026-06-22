@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.6';
+const launcherVersion = '0.3.7';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -16,6 +16,7 @@ const cachedPluginRuntime = join(homedir(), '.erp-product', 'erp-product-plugin-
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const siblingProductMcp = resolve(bundledPluginRoot, '..', '..', '..', 'product-mcp');
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
+const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 let sdk;
 let selectedRuntime;
@@ -39,7 +40,7 @@ let serverInstance;
 function run(command, args, cwd, options = {}) {
   const result = spawnSync(command, args, {
     cwd,
-    env: process.env,
+    env: processEnv(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -57,6 +58,17 @@ function run(command, args, cwd, options = {}) {
   }
 
   return result.stdout?.trim() ?? '';
+}
+
+function processEnv() {
+  const env = { ...process.env };
+  if (process.platform !== 'win32') {
+    const delimiter = ':';
+    const existingPath = env.PATH || env.Path || '';
+    const pathParts = [...posixPathEntries, ...existingPath.split(delimiter)].filter(Boolean);
+    env.PATH = [...new Set(pathParts)].join(delimiter);
+  }
+  return env;
 }
 
 function runNpm(args, cwd) {

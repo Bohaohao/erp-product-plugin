@@ -16,6 +16,7 @@ const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.conf
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
 const proxyVersion = '0.3.0';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
+const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 let sdk;
 let serverInstance;
@@ -42,7 +43,7 @@ let runtimeLock = Promise.resolve();
 function run(command, args, cwd, options = {}) {
   const result = spawnSync(command, args, {
     cwd,
-    env: process.env,
+    env: processEnv(),
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe']
   });
@@ -319,7 +320,14 @@ function withRuntimeLock(task) {
 }
 
 function processEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([, value]) => value !== undefined));
+  if (process.platform !== 'win32') {
+    const delimiter = ':';
+    const existingPath = env.PATH || env.Path || '';
+    const pathParts = [...posixPathEntries, ...existingPath.split(delimiter)].filter(Boolean);
+    env.PATH = [...new Set(pathParts)].join(delimiter);
+  }
+  return env;
 }
 
 async function stopChildRuntime() {
