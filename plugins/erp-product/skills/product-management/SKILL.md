@@ -20,10 +20,13 @@ Call `product_auth_status` after runtime self-check passes and before any backen
 If it returns `CHROME_REMOTE_DEBUGGING_NOT_ALLOWED`, stop the workflow and show the user the returned steps. In plain language, tell the user to:
 
 1. Open local Chrome, not Edge or another browser.
-2. Open or switch to the configured ERP page.
-3. Make sure the ERP page is logged in; if needed, log in again and refresh.
-4. Click Chrome's "Allow remote debugging for this browser instance" prompt and choose Allow.
-5. Return to Codex and retry the login-state check.
+2. Open `chrome://inspect/#remote-debugging` in the Chrome address bar.
+3. Enable "Allow remote debugging for this browser instance".
+4. Return to or open the configured ERP page.
+5. Make sure the ERP page is logged in; if needed, log in again and refresh.
+6. Return to Codex and retry the login-state check.
+
+If the underlying message contains `Could not find DevToolsActivePort`, do not tell the user to wait for a popup. Prioritize the `chrome://inspect/#remote-debugging` steps above.
 
 Do not treat a missing token cache by itself as a remote-debugging failure. If Chrome is reachable but no ERP token exists, ask the user to log in to ERP or refresh the ERP page, then retry `product_auth_status`. After the user completes the remote-debugging steps, call `product_auth_status` again with no extra confirmation parameter, then continue the original task.
 

@@ -14,7 +14,7 @@ const siblingProductMcp = resolve(pluginRoot, '..', '..', '..', 'product-mcp');
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.2.9';
+const proxyVersion = '0.2.10';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 
 let sdk;
