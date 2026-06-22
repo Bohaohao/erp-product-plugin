@@ -705,6 +705,8 @@ async function runtimeSelfCheck() {
           projectUrl: childConfigStatus.projectUrl,
           matchUrlPrefixes: childConfigStatus.matchUrlPrefixes,
           tokenStorageKey: childConfigStatus.tokenStorageKey,
+          remoteMcpMode: childConfigStatus.remoteMcpMode,
+          remoteMcpUrl: childConfigStatus.remoteMcpUrl,
           configPath: childConfigStatus.bridge?.configPath,
           bridgeVersion: childConfigStatus.bridge?.version
         }
