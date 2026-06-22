@@ -5,6 +5,7 @@
       "args": [
         "./scripts/start-product-token-bridge.mjs"
       ],
+      "cwd": ".",
       "startup_timeout_sec": 120
     }
   }
