@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.10';
+const launcherVersion = '0.3.11';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -17,6 +17,10 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const siblingProductMcp = resolve(bundledPluginRoot, '..', '..', '..', 'product-mcp');
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const dependencyRetryDelayMs = 60 * 1000;
+const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
+const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
+const runtimeChildStartTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_CHILD_START_TIMEOUT_MS', 240_000);
+const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 let sdk;
@@ -42,20 +46,169 @@ let dependencyStatus = {
   ok: false,
   pending: false,
   checkedAt: null,
-  error: null
+  stage: null,
+  stageStartedAt: null,
+  action: null,
+  detail: null,
+  error: null,
+  diagnostic: null,
+  warnings: []
 };
 let lastDependencyAttemptMs = 0;
 let lastChildListError = null;
 
+function positiveIntegerFromEnv(name, fallback) {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function commandLine(command, args = []) {
+  return [command, ...args].map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ');
+}
+
+function snippet(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.length > outputSnippetChars ? text.slice(-outputSnippetChars) : text;
+}
+
+function classifyFailure(message, context = {}) {
+  const text = `${message || ''} ${context.command || ''} ${(context.args || []).join(' ')}`.toLowerCase();
+  if (context.timedOut || /etimedout|timed out|timeout/.test(text)) return 'timeout';
+  if (/enoent|not recognized|command not found|no such file or directory/.test(text)) return 'command_not_found';
+  if (/proxy|github\.com|failed to connect|couldn't connect|could not resolve host|connection refused|connection reset|econn|ssl|certificate/.test(text)) {
+    return 'network_or_proxy';
+  }
+  if (/npm|node_modules|package-lock|dependency/.test(text)) return 'npm_or_dependency_install';
+  if (/module not found|err_module_not_found|cannot find module|resolve/.test(text)) return 'sdk_resolution';
+  if (/git|clone|fetch|pull|checkout|reset/.test(text)) return 'git_checkout';
+  return 'runtime_preparation';
+}
+
+function diagnosticFromError(error, fallback = {}) {
+  if (error?.diagnostic) return error.diagnostic;
+
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    stage: fallback.stage || dependencyStatus.stage || 'unknown',
+    action: fallback.action || dependencyStatus.action || null,
+    reason: message,
+    kind: classifyFailure(message, fallback),
+    command: fallback.command ? commandLine(fallback.command, fallback.args || []) : fallback.commandLine || null,
+    cwd: fallback.cwd || null,
+    timeoutMs: fallback.timeoutMs || null,
+    timedOut: Boolean(fallback.timedOut),
+    exitCode: fallback.exitCode ?? null,
+    signal: fallback.signal ?? null,
+    stdout: snippet(fallback.stdout),
+    stderr: snippet(fallback.stderr)
+  };
+}
+
+function operationError(message, fallback = {}) {
+  const error = new Error(message);
+  error.diagnostic = diagnosticFromError(error, fallback);
+  return error;
+}
+
+function markDependencyStage(stage, action, detail = {}) {
+  dependencyStatus = {
+    ...dependencyStatus,
+    ok: false,
+    pending: true,
+    checkedAt: new Date().toISOString(),
+    stage,
+    stageStartedAt: new Date().toISOString(),
+    action,
+    detail,
+    error: null,
+    diagnostic: null
+  };
+}
+
+function markDependencyReady() {
+  dependencyStatus = {
+    ...dependencyStatus,
+    ok: true,
+    pending: false,
+    checkedAt: new Date().toISOString(),
+    stage: 'ready',
+    stageStartedAt: null,
+    action: null,
+    detail: null,
+    error: null,
+    diagnostic: null
+  };
+  return dependencyStatus;
+}
+
+function markDependencyError(error) {
+  const diagnostic = diagnosticFromError(error);
+  dependencyStatus = {
+    ...dependencyStatus,
+    ok: false,
+    pending: false,
+    checkedAt: new Date().toISOString(),
+    error: diagnostic.reason,
+    diagnostic
+  };
+  return dependencyStatus;
+}
+
+function recordDependencyWarning(error) {
+  const diagnostic = diagnosticFromError(error);
+  dependencyStatus = {
+    ...dependencyStatus,
+    warnings: [...(dependencyStatus.warnings || []).slice(-4), diagnostic]
+  };
+  return diagnostic;
+}
+
+function dependencyFailureError(status = dependencyStatus) {
+  const diagnostic = status.diagnostic || diagnosticFromError(status.error || 'ERP Product runtime dependencies are not ready.');
+  const error = new Error(diagnostic.reason || 'ERP Product runtime dependencies are not ready.');
+  error.diagnostic = diagnostic;
+  return error;
+}
+
 function run(command, args, cwd, options = {}) {
+  const timeoutMs = options.timeoutMs ?? externalCommandTimeoutMs;
+  const stage = options.stage;
+  const action = options.action || commandLine(command, args);
+  if (stage) {
+    markDependencyStage(stage, action, {
+      command: commandLine(command, args),
+      cwd,
+      timeoutMs
+    });
+  }
+
   const result = spawnSync(command, args, {
     cwd,
     env: processEnv(),
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs
   });
 
-  if (result.error) throw result.error;
+  if (result.error) {
+    const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal;
+    throw operationError(
+      timedOut ? `${action} timed out after ${Math.ceil(timeoutMs / 1000)}s.` : result.error.message,
+      {
+        stage,
+        action,
+        command,
+        args,
+        cwd,
+        timeoutMs,
+        timedOut,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr
+      }
+    );
+  }
 
   if (options.logOutput !== false) {
     if (result.stdout) process.stderr.write(result.stdout);
@@ -64,7 +217,18 @@ function run(command, args, cwd, options = {}) {
 
   if (result.status !== 0) {
     if (options.logOutput === false && result.stderr) process.stderr.write(result.stderr);
-    throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+    throw operationError(`${action} failed with exit code ${result.status}.`, {
+      stage,
+      action,
+      command,
+      args,
+      cwd,
+      timeoutMs,
+      exitCode: result.status,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr
+    });
   }
 
   return result.stdout?.trim() ?? '';
@@ -108,16 +272,16 @@ function nodeManagerPathEntries(home = homedir()) {
   return entries.filter((entry) => existsSync(entry));
 }
 
-function runNpm(args, cwd) {
+function runNpm(args, cwd, options = {}) {
   if (process.platform === 'win32') {
-    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd);
+    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd, options);
   }
 
-  return run('npm', args, cwd);
+  return run('npm', args, cwd, options);
 }
 
-function gitHead(dir) {
-  return run('git', ['rev-parse', 'HEAD'], dir, { logOutput: false });
+function gitHead(dir, options = {}) {
+  return run('git', ['rev-parse', 'HEAD'], dir, { logOutput: false, ...options });
 }
 
 function gitHeadSafe(dir) {
@@ -169,17 +333,34 @@ function resolveProductMcpForSdk() {
   try {
     if (!hasProductMcp(cachedProductMcp)) {
       mkdirSync(dirname(cachedProductMcp), { recursive: true });
-      run('git', ['clone', '--branch', productMcpRef, productMcpRepoUrl, cachedProductMcp], dirname(cachedProductMcp));
+      run('git', ['clone', '--branch', productMcpRef, productMcpRepoUrl, cachedProductMcp], dirname(cachedProductMcp), {
+        stage: 'product_mcp_git_clone',
+        action: 'clone Product MCP from GitHub',
+        timeoutMs: externalCommandTimeoutMs
+      });
     } else if (existsSync(join(cachedProductMcp, '.git'))) {
-      run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp);
-      run('git', ['fetch', '--prune', 'origin'], cachedProductMcp);
-      run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp);
-      run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp);
+      run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp, {
+        stage: 'product_mcp_git_remote',
+        action: 'update Product MCP Git remote URL'
+      });
+      run('git', ['fetch', '--prune', 'origin'], cachedProductMcp, {
+        stage: 'product_mcp_git_fetch',
+        action: 'fetch Product MCP updates from GitHub'
+      });
+      run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp, {
+        stage: 'product_mcp_git_reset',
+        action: 'reset Product MCP cache to remote branch'
+      });
+      run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp, {
+        stage: 'product_mcp_git_pull',
+        action: 'pull Product MCP latest code from GitHub'
+      });
     }
 
     return cachedProductMcp;
   } catch (error) {
-    process.stderr.write(`Product MCP SDK checkout update failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    const diagnostic = recordDependencyWarning(error);
+    process.stderr.write(`Product MCP SDK checkout update failed at ${diagnostic.stage}: ${diagnostic.reason}\n`);
     if (hasProductMcp(cachedProductMcp)) return cachedProductMcp;
     if (hasProductMcp(siblingProductMcp)) return siblingProductMcp;
     throw error;
@@ -189,7 +370,11 @@ function resolveProductMcpForSdk() {
 function ensureProductMcpSdk() {
   const productMcpDir = resolveProductMcpForSdk();
   if (!existsSync(productMcpRuntimeDependency(productMcpDir))) {
-    runNpm(['install', '--omit=dev'], productMcpDir);
+    runNpm(['install', '--omit=dev'], productMcpDir, {
+      stage: 'product_mcp_npm_install',
+      action: 'install Product MCP runtime dependencies',
+      timeoutMs: npmInstallTimeoutMs
+    });
   }
   return productMcpDir;
 }
@@ -201,10 +386,25 @@ function importFromProductMcp(productMcpDir, specifier) {
 
 async function loadSdk() {
   const productMcpDir = ensureProductMcpSdk();
-  const [clientModule, clientStdioModule] = await Promise.all([
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/index.js'),
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/stdio.js')
-  ]);
+  markDependencyStage('product_mcp_sdk_import', 'load Product MCP SDK modules', {
+    cwd: productMcpDir,
+    modules: ['@modelcontextprotocol/sdk/client/index.js', '@modelcontextprotocol/sdk/client/stdio.js']
+  });
+
+  let clientModule;
+  let clientStdioModule;
+  try {
+    [clientModule, clientStdioModule] = await Promise.all([
+      importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/index.js'),
+      importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/stdio.js')
+    ]);
+  } catch (error) {
+    throw operationError(error instanceof Error ? error.message : String(error), {
+      stage: 'product_mcp_sdk_import',
+      action: 'load Product MCP SDK modules',
+      cwd: productMcpDir
+    });
+  }
 
   sdk = {
     Client: clientModule.Client,
@@ -214,12 +414,7 @@ async function loadSdk() {
 
 function beginLauncherDependencyLoad(options = {}) {
   if (sdk) {
-    dependencyStatus = {
-      ok: true,
-      pending: false,
-      checkedAt: new Date().toISOString(),
-      error: null
-    };
+    markDependencyReady();
     return Promise.resolve(dependencyStatus);
   }
 
@@ -232,34 +427,30 @@ function beginLauncherDependencyLoad(options = {}) {
   if (!sdkLoadPromise) {
     lastDependencyAttemptMs = now;
     dependencyStatus = {
+      ...dependencyStatus,
       ok: false,
       pending: true,
       checkedAt: new Date().toISOString(),
-      error: null
+      stage: 'dependency_prepare_start',
+      stageStartedAt: new Date().toISOString(),
+      action: 'prepare ERP Product runtime dependencies',
+      detail: null,
+      error: null,
+      diagnostic: null
     };
 
     sdkLoadPromise = (async () => {
       await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
       selectedRuntime ??= resolvePluginRuntime();
       await loadSdk();
-      dependencyStatus = {
-        ok: true,
-        pending: false,
-        checkedAt: new Date().toISOString(),
-        error: null
-      };
+      markDependencyReady();
       await serverInstance?.sendToolListChanged?.().catch(() => undefined);
       return dependencyStatus;
     })().catch(async (error) => {
       sdkLoadPromise = undefined;
-      dependencyStatus = {
-        ok: false,
-        pending: false,
-        checkedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error)
-      };
+      markDependencyError(error);
       await serverInstance?.sendToolListChanged?.().catch(() => undefined);
-      throw error;
+      return dependencyStatus;
     });
   }
 
@@ -268,12 +459,7 @@ function beginLauncherDependencyLoad(options = {}) {
 
 async function ensureLauncherDependencies(options = {}) {
   if (sdk) {
-    dependencyStatus = {
-      ok: true,
-      pending: false,
-      checkedAt: new Date().toISOString(),
-      error: null
-    };
+    markDependencyReady();
     return dependencyStatus;
   }
 
@@ -282,18 +468,19 @@ async function ensureLauncherDependencies(options = {}) {
 
   if (options.wait === false) return dependencyStatus;
 
-  try {
-    return await promise;
-  } catch (error) {
-    if (options.throwOnError) throw error;
-    return dependencyStatus;
-  }
+  const status = await promise;
+  if (options.throwOnError && !status.ok) throw dependencyFailureError(status);
+  return status;
 }
 
 function resolveBundledRuntime(error = null) {
   const bundled = selectionForPluginRoot(bundledPluginRoot, 'bundled runtime fallback', null, false, error);
   if (!existsSync(bundled.entry)) {
-    throw new Error(`Bundled ERP Product runtime is missing: ${bundled.entry}`);
+    throw operationError(`Bundled ERP Product runtime is missing: ${bundled.entry}`, {
+      stage: 'plugin_runtime_bundled_validate',
+      action: 'validate bundled ERP Product runtime fallback',
+      cwd: bundledPluginRoot
+    });
   }
   return bundled;
 }
@@ -305,23 +492,52 @@ function resolvePluginRuntime() {
   try {
     let updated = false;
     if (existsSync(join(cachedPluginRuntime, '.git'))) {
-      const before = gitHead(cachedPluginRuntime);
-      run('git', ['remote', 'set-url', 'origin', pluginRuntimeRepoUrl], cachedPluginRuntime);
-      run('git', ['fetch', '--prune', 'origin'], cachedPluginRuntime);
-      run('git', ['reset', '--hard', `origin/${pluginRuntimeRef}`], cachedPluginRuntime);
-      run('git', ['pull', '--ff-only', 'origin', pluginRuntimeRef], cachedPluginRuntime);
-      const after = gitHead(cachedPluginRuntime);
+      const before = gitHead(cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_head',
+        action: 'read ERP Product plugin runtime current commit'
+      });
+      run('git', ['remote', 'set-url', 'origin', pluginRuntimeRepoUrl], cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_remote',
+        action: 'update ERP Product plugin runtime Git remote URL'
+      });
+      run('git', ['fetch', '--prune', 'origin'], cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_fetch',
+        action: 'fetch ERP Product plugin runtime updates from GitHub'
+      });
+      run('git', ['reset', '--hard', `origin/${pluginRuntimeRef}`], cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_reset',
+        action: 'reset ERP Product plugin runtime cache to remote branch'
+      });
+      run('git', ['pull', '--ff-only', 'origin', pluginRuntimeRef], cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_pull',
+        action: 'pull ERP Product plugin runtime latest code from GitHub'
+      });
+      const after = gitHead(cachedPluginRuntime, {
+        stage: 'plugin_runtime_git_head_after_update',
+        action: 'read ERP Product plugin runtime commit after update'
+      });
       updated = before !== after;
     } else if (!existsSync(cachedPluginRuntime)) {
       mkdirSync(dirname(cachedPluginRuntime), { recursive: true });
-      run('git', ['clone', '--branch', pluginRuntimeRef, pluginRuntimeRepoUrl, cachedPluginRuntime], dirname(cachedPluginRuntime));
+      run('git', ['clone', '--branch', pluginRuntimeRef, pluginRuntimeRepoUrl, cachedPluginRuntime], dirname(cachedPluginRuntime), {
+        stage: 'plugin_runtime_git_clone',
+        action: 'clone ERP Product plugin runtime from GitHub'
+      });
       updated = true;
     } else {
-      throw new Error(`Cached ERP Product runtime is not a git checkout: ${cachedPluginRuntime}`);
+      throw operationError(`Cached ERP Product runtime is not a git checkout: ${cachedPluginRuntime}`, {
+        stage: 'plugin_runtime_cache_validate',
+        action: 'validate ERP Product plugin runtime cache',
+        cwd: cachedPluginRuntime
+      });
     }
 
     if (!hasPluginRuntimeCheckout(cachedPluginRuntime)) {
-      throw new Error(`ERP Product runtime checkout is incomplete: ${cachedPluginRuntime}`);
+      throw operationError(`ERP Product runtime checkout is incomplete: ${cachedPluginRuntime}`, {
+        stage: 'plugin_runtime_cache_validate',
+        action: 'validate ERP Product plugin runtime checkout',
+        cwd: cachedPluginRuntime
+      });
     }
 
     return selectionForPluginRoot(
@@ -331,8 +547,9 @@ function resolvePluginRuntime() {
       updated
     );
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`ERP Product runtime update failed: ${message}\n`);
+    const diagnostic = recordDependencyWarning(error);
+    const message = diagnostic.reason;
+    process.stderr.write(`ERP Product runtime update failed at ${diagnostic.stage}: ${message}\n`);
     if (hasPluginRuntimeCheckout(cachedPluginRuntime)) {
       return selectionForPluginRoot(
         pluginRootForRuntimeCheckout(cachedPluginRuntime),
@@ -376,15 +593,56 @@ async function stopRuntimeChild() {
 async function startRuntimeChild() {
   await ensureLauncherDependencies({ wait: true, throwOnError: true });
   selectedRuntime ??= resolvePluginRuntime();
+  markDependencyStage('runtime_child_start', 'start ERP Product runtime proxy child process', {
+    entry: selectedRuntime.entry,
+    cwd: selectedRuntime.pluginRoot
+  });
 
   const transport = new sdk.StdioClientTransport({
     command: process.execPath,
     args: [selectedRuntime.entry],
     cwd: selectedRuntime.pluginRoot,
-    stderr: 'inherit'
+    stderr: 'pipe'
+  });
+  let childStderr = '';
+  transport.stderr?.on('data', (chunk) => {
+    const text = chunk.toString();
+    childStderr = snippet(`${childStderr}\n${text}`);
+    process.stderr.write(text);
   });
   const client = new sdk.Client({ name: 'erp-product-runtime-launcher-child', version: launcherVersion });
-  await client.connect(transport);
+  try {
+    await Promise.race([
+      client.connect(transport),
+      new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(
+            operationError(`ERP Product runtime proxy child startup timed out after ${Math.ceil(runtimeChildStartTimeoutMs / 1000)}s.`, {
+              stage: 'runtime_child_start',
+              action: 'connect to ERP Product runtime proxy child process',
+              command: process.execPath,
+              args: [selectedRuntime.entry],
+              cwd: selectedRuntime.pluginRoot,
+              timeoutMs: runtimeChildStartTimeoutMs,
+              timedOut: true,
+              stderr: childStderr
+            })
+          );
+        }, runtimeChildStartTimeoutMs);
+      })
+    ]);
+  } catch (error) {
+    await transport.close?.().catch(() => undefined);
+    if (error?.diagnostic) throw error;
+    throw operationError(error instanceof Error ? error.message : String(error), {
+      stage: 'runtime_child_start',
+      action: 'connect to ERP Product runtime proxy child process',
+      command: process.execPath,
+      args: [selectedRuntime.entry],
+      cwd: selectedRuntime.pluginRoot,
+      stderr: childStderr
+    });
+  }
 
   runtimeClient = client;
   runtimeTransport = transport;
@@ -402,6 +660,7 @@ async function startRuntimeChild() {
     }
   };
 
+  markDependencyReady();
   process.stderr.write(`ERP Product runtime proxy started: ${selectedRuntime.entry}\n`);
 }
 
@@ -754,7 +1013,70 @@ async function callTool(request) {
 
   if (name === 'product_runtime_launcher_refresh') {
     const dependencyRefresh = await ensureLauncherDependencies({ force: true, wait: true });
-    const syncResult = await syncPluginRuntime({ force: true, allowChildRestart: true });
+    if (!dependencyRefresh.ok) {
+      const diagnostic = dependencyRefresh.diagnostic;
+      return jsonResult(
+        launcherStatus({
+          ok: false,
+          code: 'ERP_PRODUCT_RUNTIME_NOT_READY',
+          readsChromeToken: false,
+          readsRemoteErp: false,
+          requestedTool: name,
+          errorStage: diagnostic?.stage || dependencyRefresh.stage,
+          errorReason: diagnostic?.reason || dependencyRefresh.error,
+          errorKind: diagnostic?.kind || null,
+          errorCommand: diagnostic?.command || dependencyRefresh.detail?.command || null,
+          diagnostic,
+          refresh: {
+            dependencies: dependencyRefresh,
+            restarted: false
+          },
+          agentGuidance: {
+            conclusion:
+              diagnostic
+                ? `ERP Product runtime dependency refresh failed at ${diagnostic.stage}: ${diagnostic.reason}.`
+                : `ERP Product runtime dependency refresh is not ready at ${dependencyRefresh.stage || 'dependency preparation'}.`,
+            nextAction:
+              'Report the startup error stage and reason to the user. Do not troubleshoot Chrome remote debugging until launcher/runtime dependencies are ready.'
+          }
+        })
+      );
+    }
+
+    let syncResult;
+    try {
+      syncResult = await syncPluginRuntime({ force: true, allowChildRestart: true });
+    } catch (error) {
+      const diagnostic = diagnosticFromError(error);
+      return jsonResult(
+        launcherStatus({
+          ok: false,
+          code: 'ERP_PRODUCT_RUNTIME_NOT_READY',
+          readsChromeToken: false,
+          readsRemoteErp: false,
+          requestedTool: name,
+          errorStage: diagnostic.stage,
+          errorReason: diagnostic.reason,
+          errorKind: diagnostic.kind,
+          errorCommand: diagnostic.command,
+          diagnostic,
+          refresh: {
+            dependencies: dependencyRefresh,
+            sync: {
+              ok: false,
+              diagnostic
+            },
+            restarted: false
+          },
+          agentGuidance: {
+            conclusion: `ERP Product runtime refresh failed at ${diagnostic.stage}: ${diagnostic.reason}.`,
+            nextAction:
+              'Report the startup error stage and reason to the user. Do not troubleshoot Chrome remote debugging until launcher/runtime dependencies are ready.'
+          }
+        })
+      );
+    }
+
     let restarted = syncResult.restarted;
     if (args.restart === true && runtimeClient && !restarted) {
       await withRuntimeLock(async () => {
@@ -782,6 +1104,7 @@ async function callTool(request) {
 
   if (!sdk && ['product_runtime_self_check', 'product_runtime_status', 'product_auth_status'].includes(name)) {
     const dependencies = await ensureLauncherDependencies({ wait: false });
+    const diagnostic = dependencies.diagnostic;
     return jsonResult(
       launcherStatus({
         ok: false,
@@ -789,13 +1112,20 @@ async function callTool(request) {
         readsChromeToken: false,
         readsRemoteErp: false,
         requestedTool: name,
+        currentStage: dependencies.stage,
+        currentAction: dependencies.action,
+        errorStage: diagnostic?.stage || null,
+        errorReason: diagnostic?.reason || dependencies.error,
+        errorKind: diagnostic?.kind || null,
+        errorCommand: diagnostic?.command || dependencies.detail?.command || null,
+        diagnostic,
         agentGuidance: {
           conclusion:
             'ERP Product launcher is running, but Product MCP runtime dependencies are not ready yet. This is before Chrome DevTools MCP and before ERP token reading.',
           nextAction:
-            dependencies.error
-              ? 'Report the launcher dependency error. After network/npm/GitHub access is recoverable, retry product_runtime_launcher_refresh.'
-              : 'Wait briefly or retry product_runtime_self_check; the launcher is preparing Product MCP runtime dependencies in the background.'
+            diagnostic
+              ? `Report the startup failure at ${diagnostic.stage}: ${diagnostic.reason}. After the underlying GitHub/npm/network/SDK issue is recoverable, retry product_runtime_launcher_refresh.`
+              : `Startup is currently at ${dependencies.stage || 'dependency preparation'}: ${dependencies.action || 'preparing runtime dependencies'}. Wait briefly or retry product_runtime_self_check.`
         }
       })
     );
@@ -809,6 +1139,7 @@ async function callTool(request) {
     });
   } catch (error) {
     if (['product_runtime_self_check', 'product_runtime_status', 'product_auth_status'].includes(name)) {
+      const diagnostic = diagnosticFromError(error);
       return jsonResult(
         launcherStatus({
           ok: false,
@@ -816,12 +1147,17 @@ async function callTool(request) {
           readsChromeToken: false,
           readsRemoteErp: false,
           requestedTool: name,
-          error: error instanceof Error ? error.message : String(error),
+          error: diagnostic.reason,
+          errorStage: diagnostic.stage,
+          errorReason: diagnostic.reason,
+          errorKind: diagnostic.kind,
+          errorCommand: diagnostic.command,
+          diagnostic,
           agentGuidance: {
             conclusion:
-              'ERP Product launcher is visible, but Product MCP runtime is not ready. This is before Chrome DevTools MCP and before ERP token reading.',
+              `ERP Product launcher is visible, but Product MCP runtime is not ready. Failure happened at ${diagnostic.stage}: ${diagnostic.reason}. This is before Chrome DevTools MCP and before ERP token reading.`,
             nextAction:
-              'Do not troubleshoot Chrome remote debugging yet. Check launcher dependencies, local Node visibility from Codex, GitHub/npm access, or retry product_runtime_launcher_refresh after network access is available.'
+              'Do not troubleshoot Chrome remote debugging yet. Report this startup stage and reason, then retry product_runtime_launcher_refresh only after the underlying Node/GitHub/npm/network/SDK issue is recoverable.'
           }
         })
       );

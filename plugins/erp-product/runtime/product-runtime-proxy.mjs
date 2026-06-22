@@ -16,6 +16,9 @@ const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.conf
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
 const proxyVersion = '0.3.0';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
+const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
+const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
+const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 let sdk;
@@ -39,17 +42,53 @@ let lastSyncStatus = {
   error: null
 };
 let runtimeLock = Promise.resolve();
+let startupStage = {
+  stage: null,
+  action: null,
+  detail: null
+};
 
 function run(command, args, cwd, options = {}) {
+  const timeoutMs = options.timeoutMs ?? externalCommandTimeoutMs;
+  if (options.stage) {
+    startupStage = {
+      stage: options.stage,
+      action: options.action || commandLine(command, args),
+      detail: {
+        command: commandLine(command, args),
+        cwd,
+        timeoutMs
+      }
+    };
+  }
+
   const result = spawnSync(command, args, {
     cwd,
     env: processEnv(),
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs
   });
 
   if (result.error) {
-    throw result.error;
+    const timedOut = result.error?.code === 'ETIMEDOUT' || result.signal;
+    throw operationError(
+      timedOut
+        ? `${startupStage.action || commandLine(command, args)} timed out after ${Math.ceil(timeoutMs / 1000)}s.`
+        : result.error.message,
+      {
+        stage: options.stage,
+        action: options.action,
+        command,
+        args,
+        cwd,
+        timeoutMs,
+        timedOut,
+        signal: result.signal,
+        stdout: result.stdout,
+        stderr: result.stderr
+      }
+    );
   }
 
   if (options.logOutput !== false) {
@@ -61,18 +100,89 @@ function run(command, args, cwd, options = {}) {
     if (options.logOutput === false && result.stderr) {
       process.stderr.write(result.stderr);
     }
-    throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+    throw operationError(`${startupStage.action || commandLine(command, args)} failed with exit code ${result.status}.`, {
+      stage: options.stage,
+      action: options.action,
+      command,
+      args,
+      cwd,
+      timeoutMs,
+      exitCode: result.status,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr
+    });
   }
 
   return result.stdout?.trim() ?? '';
 }
 
-function runNpm(args, cwd) {
+function positiveIntegerFromEnv(name, fallback) {
+  const parsed = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function commandLine(command, args = []) {
+  return [command, ...args].map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(' ');
+}
+
+function snippet(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text.length > outputSnippetChars ? text.slice(-outputSnippetChars) : text;
+}
+
+function classifyFailure(message, context = {}) {
+  const text = `${message || ''} ${context.command || ''} ${(context.args || []).join(' ')}`.toLowerCase();
+  if (context.timedOut || /etimedout|timed out|timeout/.test(text)) return 'timeout';
+  if (/enoent|not recognized|command not found|no such file or directory/.test(text)) return 'command_not_found';
+  if (/proxy|github\.com|failed to connect|couldn't connect|could not resolve host|connection refused|connection reset|econn|ssl|certificate/.test(text)) {
+    return 'network_or_proxy';
+  }
+  if (/npm|node_modules|package-lock|dependency/.test(text)) return 'npm_or_dependency_install';
+  if (/module not found|err_module_not_found|cannot find module|resolve/.test(text)) return 'sdk_resolution';
+  if (/git|clone|fetch|pull|checkout|reset/.test(text)) return 'git_checkout';
+  return 'runtime_preparation';
+}
+
+function diagnosticFromError(error, fallback = {}) {
+  if (error?.diagnostic) return error.diagnostic;
+
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    stage: fallback.stage || startupStage.stage || 'unknown',
+    action: fallback.action || startupStage.action || null,
+    reason: message,
+    kind: classifyFailure(message, fallback),
+    command: fallback.command ? commandLine(fallback.command, fallback.args || []) : fallback.commandLine || startupStage.detail?.command || null,
+    cwd: fallback.cwd || startupStage.detail?.cwd || null,
+    timeoutMs: fallback.timeoutMs || startupStage.detail?.timeoutMs || null,
+    timedOut: Boolean(fallback.timedOut),
+    exitCode: fallback.exitCode ?? null,
+    signal: fallback.signal ?? null,
+    stdout: snippet(fallback.stdout),
+    stderr: snippet(fallback.stderr)
+  };
+}
+
+function operationError(message, fallback = {}) {
+  const error = new Error(message);
+  error.diagnostic = diagnosticFromError(error, fallback);
+  return error;
+}
+
+function writeStartupFailure(error) {
+  const diagnostic = diagnosticFromError(error);
+  process.stderr.write(`ERP Product runtime proxy startup failed at ${diagnostic.stage}: ${diagnostic.reason}\n`);
+  process.stderr.write(`${JSON.stringify({ code: 'ERP_PRODUCT_RUNTIME_PROXY_STARTUP_FAILED', diagnostic })}\n`);
+}
+
+function runNpm(args, cwd, options = {}) {
   if (process.platform === 'win32') {
-    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd);
+    return run('cmd', ['/d', '/s', '/c', 'npm', ...args], cwd, options);
   }
 
-  return run('npm', args, cwd);
+  return run('npm', args, cwd, options);
 }
 
 function hasProductMcp(dir) {
@@ -212,22 +322,49 @@ function tryResolveGitProductMcp() {
   try {
     if (!hasProductMcp(cachedProductMcp)) {
       mkdirSync(dirname(cachedProductMcp), { recursive: true });
-      run('git', ['clone', '--branch', productMcpRef, productMcpRepoUrl, cachedProductMcp], dirname(cachedProductMcp));
+      run('git', ['clone', '--branch', productMcpRef, productMcpRepoUrl, cachedProductMcp], dirname(cachedProductMcp), {
+        stage: 'runtime_proxy_product_mcp_git_clone',
+        action: 'clone Product MCP from GitHub for runtime proxy'
+      });
       return { dir: cachedProductMcp, updated: true, source: 'git clone' };
     }
 
     if (!existsSync(join(cachedProductMcp, '.git'))) {
-      throw new Error(`Cached Product MCP is not a git checkout: ${cachedProductMcp}`);
+      throw operationError(`Cached Product MCP is not a git checkout: ${cachedProductMcp}`, {
+        stage: 'runtime_proxy_product_mcp_cache_validate',
+        action: 'validate Product MCP cache for runtime proxy',
+        cwd: cachedProductMcp
+      });
     }
 
-    const before = gitHead(cachedProductMcp);
+    const before = run('git', ['rev-parse', 'HEAD'], cachedProductMcp, {
+      logOutput: false,
+      stage: 'runtime_proxy_product_mcp_git_head',
+      action: 'read Product MCP current commit for runtime proxy'
+    });
 
-    run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp);
-    run('git', ['fetch', '--prune', 'origin'], cachedProductMcp);
-    run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp);
-    run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp);
+    run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp, {
+      stage: 'runtime_proxy_product_mcp_git_remote',
+      action: 'update Product MCP Git remote URL for runtime proxy'
+    });
+    run('git', ['fetch', '--prune', 'origin'], cachedProductMcp, {
+      stage: 'runtime_proxy_product_mcp_git_fetch',
+      action: 'fetch Product MCP updates from GitHub for runtime proxy'
+    });
+    run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp, {
+      stage: 'runtime_proxy_product_mcp_git_reset',
+      action: 'reset Product MCP cache to remote branch for runtime proxy'
+    });
+    run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp, {
+      stage: 'runtime_proxy_product_mcp_git_pull',
+      action: 'pull Product MCP latest code from GitHub for runtime proxy'
+    });
 
-    const after = gitHead(cachedProductMcp);
+    const after = run('git', ['rev-parse', 'HEAD'], cachedProductMcp, {
+      logOutput: false,
+      stage: 'runtime_proxy_product_mcp_git_head_after_update',
+      action: 'read Product MCP commit after runtime proxy update'
+    });
 
     return {
       dir: cachedProductMcp,
@@ -235,7 +372,8 @@ function tryResolveGitProductMcp() {
       source: 'git pull'
     };
   } catch (error) {
-    process.stderr.write(`Product MCP git sync failed.\n${error.message}\n`);
+    const diagnostic = diagnosticFromError(error);
+    process.stderr.write(`Product MCP git sync failed at ${diagnostic.stage}: ${diagnostic.reason}\n`);
 
     if (hasProductMcp(siblingProductMcp)) {
       process.stderr.write(`Using sibling Product MCP fallback after git sync failure: ${siblingProductMcp}\n`);
@@ -277,11 +415,23 @@ function ensureProductMcp(selection) {
   process.stderr.write(`Using Product MCP (${selection.source}): ${selection.dir}\n`);
 
   if (selection.updated || !existsSync(bridgeEntry) || buildIsStale) {
-    runNpm(['install'], selection.dir);
-    runNpm(['run', 'build'], selection.dir);
+    runNpm(['install'], selection.dir, {
+      stage: 'runtime_proxy_product_mcp_npm_install',
+      action: 'install Product MCP dependencies for runtime proxy',
+      timeoutMs: npmInstallTimeoutMs
+    });
+    runNpm(['run', 'build'], selection.dir, {
+      stage: 'runtime_proxy_product_mcp_npm_build',
+      action: 'build Product MCP for runtime proxy',
+      timeoutMs: npmInstallTimeoutMs
+    });
     rebuilt = true;
   } else if (!existsSync(runtimeDependency)) {
-    runNpm(['install', '--omit=dev'], selection.dir);
+    runNpm(['install', '--omit=dev'], selection.dir, {
+      stage: 'runtime_proxy_product_mcp_npm_install_runtime',
+      action: 'install Product MCP runtime dependencies for runtime proxy',
+      timeoutMs: npmInstallTimeoutMs
+    });
   }
 
   return {
@@ -296,13 +446,34 @@ function importFromProductMcp(specifier) {
 }
 
 async function loadSdk() {
-  const [serverModule, serverStdioModule, clientModule, clientStdioModule, typesModule] = await Promise.all([
-    importFromProductMcp('@modelcontextprotocol/sdk/server/index.js'),
-    importFromProductMcp('@modelcontextprotocol/sdk/server/stdio.js'),
-    importFromProductMcp('@modelcontextprotocol/sdk/client/index.js'),
-    importFromProductMcp('@modelcontextprotocol/sdk/client/stdio.js'),
-    importFromProductMcp('@modelcontextprotocol/sdk/types.js')
-  ]);
+  startupStage = {
+    stage: 'runtime_proxy_product_mcp_sdk_import',
+    action: 'load Product MCP SDK modules for runtime proxy',
+    detail: {
+      cwd: productMcpDir
+    }
+  };
+
+  let serverModule;
+  let serverStdioModule;
+  let clientModule;
+  let clientStdioModule;
+  let typesModule;
+  try {
+    [serverModule, serverStdioModule, clientModule, clientStdioModule, typesModule] = await Promise.all([
+      importFromProductMcp('@modelcontextprotocol/sdk/server/index.js'),
+      importFromProductMcp('@modelcontextprotocol/sdk/server/stdio.js'),
+      importFromProductMcp('@modelcontextprotocol/sdk/client/index.js'),
+      importFromProductMcp('@modelcontextprotocol/sdk/client/stdio.js'),
+      importFromProductMcp('@modelcontextprotocol/sdk/types.js')
+    ]);
+  } catch (error) {
+    throw operationError(error instanceof Error ? error.message : String(error), {
+      stage: 'runtime_proxy_product_mcp_sdk_import',
+      action: 'load Product MCP SDK modules for runtime proxy',
+      cwd: productMcpDir
+    });
+  }
 
   sdk = {
     Server: serverModule.Server,
@@ -929,18 +1100,23 @@ process.on('SIGTERM', () => {
   shutdown().finally(() => process.exit(0));
 });
 
-syncRuntimeBridgeConfig();
-productMcp = resolveProductMcp();
-productMcpDir = productMcp.dir;
-ensureProductMcp(productMcp);
-lastSyncMs = Date.now();
-lastSyncStatus = {
-  checkedAt: new Date(lastSyncMs).toISOString(),
-  checked: true,
-  updated: productMcp.updated,
-  source: productMcp.source,
-  error: null
-};
+try {
+  syncRuntimeBridgeConfig();
+  productMcp = resolveProductMcp();
+  productMcpDir = productMcp.dir;
+  ensureProductMcp(productMcp);
+  lastSyncMs = Date.now();
+  lastSyncStatus = {
+    checkedAt: new Date(lastSyncMs).toISOString(),
+    checked: true,
+    updated: productMcp.updated,
+    source: productMcp.source,
+    error: null
+  };
 
-await loadSdk();
-await startProxyServer();
+  await loadSdk();
+  await startProxyServer();
+} catch (error) {
+  writeStartupFailure(error);
+  process.exit(1);
+}

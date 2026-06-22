@@ -17,6 +17,10 @@ If a previous attempt used a temporary script and hit SDK resolution errors, Chr
 
 ERP Product plugin `0.3.10` and later exposes a lightweight runtime launcher before Product MCP SDK/runtime preparation finishes. If `product_runtime_self_check` returns `ERP_PRODUCT_RUNTIME_NOT_READY`, treat it as a launcher/runtime dependency issue before Chrome DevTools MCP and before ERP token reading. Do not tell the user to enable Chrome remote debugging for that code; report the returned Node/GitHub/npm/runtime dependency cause and retry `product_runtime_launcher_refresh` only after the cause is recoverable.
 
+ERP Product plugin `0.3.11` and later returns startup failure attribution fields such as `errorStage`, `errorReason`, `errorKind`, `errorCommand`, and `diagnostic`. When GitHub pull, npm install, network/proxy, SDK import, or runtime child startup fails or times out, explicitly tell the user the failing stage and reason. Do not give a generic "MCP tools are unavailable" answer, and do not route the user to Chrome remote debugging until these launcher/runtime dependency fields are clear.
+
+If startup eventually succeeds by falling back to a cached checkout or sibling Product MCP, inspect `dependencies.warnings` and `refresh.dependencies.warnings`. Mention the degraded stage and fallback in the final status when it materially explains a slow startup or stale-code risk, while making clear that the current runtime recovered.
+
 ## First Step
 
 Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.
