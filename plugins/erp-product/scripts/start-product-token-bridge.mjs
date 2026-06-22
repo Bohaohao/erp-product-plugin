@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.7';
+const launcherVersion = '0.3.8';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -136,6 +136,7 @@ function resolveProductMcpForSdk() {
     } else if (existsSync(join(cachedProductMcp, '.git'))) {
       run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp);
       run('git', ['fetch', '--prune', 'origin'], cachedProductMcp);
+      run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp);
       run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp);
     }
 
@@ -199,6 +200,7 @@ function resolvePluginRuntime() {
       const before = gitHead(cachedPluginRuntime);
       run('git', ['remote', 'set-url', 'origin', pluginRuntimeRepoUrl], cachedPluginRuntime);
       run('git', ['fetch', '--prune', 'origin'], cachedPluginRuntime);
+      run('git', ['reset', '--hard', `origin/${pluginRuntimeRef}`], cachedPluginRuntime);
       run('git', ['pull', '--ff-only', 'origin', pluginRuntimeRef], cachedPluginRuntime);
       const after = gitHead(cachedPluginRuntime);
       updated = before !== after;

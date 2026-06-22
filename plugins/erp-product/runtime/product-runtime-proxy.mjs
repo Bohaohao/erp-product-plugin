@@ -224,6 +224,7 @@ function tryResolveGitProductMcp() {
 
     run('git', ['remote', 'set-url', 'origin', productMcpRepoUrl], cachedProductMcp);
     run('git', ['fetch', '--prune', 'origin'], cachedProductMcp);
+    run('git', ['reset', '--hard', `origin/${productMcpRef}`], cachedProductMcp);
     run('git', ['pull', '--ff-only', 'origin', productMcpRef], cachedProductMcp);
 
     const after = gitHead(cachedProductMcp);
