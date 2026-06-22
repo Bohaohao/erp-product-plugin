@@ -15,6 +15,8 @@ Use only the published `product_*` MCP tools for Chrome login checks, token read
 
 If a previous attempt used a temporary script and hit SDK resolution errors, Chrome page-list parsing errors such as `Title (URL)`, `Payload Too Large`, stale config, or token/cache confusion, stop using that script. Call `product_runtime_self_check`, then continue through `product_auth_status` and the normal `product_*` tool chain.
 
+ERP Product plugin `0.3.10` and later exposes a lightweight runtime launcher before Product MCP SDK/runtime preparation finishes. If `product_runtime_self_check` returns `ERP_PRODUCT_RUNTIME_NOT_READY`, treat it as a launcher/runtime dependency issue before Chrome DevTools MCP and before ERP token reading. Do not tell the user to enable Chrome remote debugging for that code; report the returned Node/GitHub/npm/runtime dependency cause and retry `product_runtime_launcher_refresh` only after the cause is recoverable.
+
 ## First Step
 
 Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.

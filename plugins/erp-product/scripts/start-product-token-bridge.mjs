@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.9';
+const launcherVersion = '0.3.10';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -16,9 +16,11 @@ const cachedPluginRuntime = join(homedir(), '.erp-product', 'erp-product-plugin-
 const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const siblingProductMcp = resolve(bundledPluginRoot, '..', '..', '..', 'product-mcp');
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
+const dependencyRetryDelayMs = 60 * 1000;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
 let sdk;
+let sdkLoadPromise;
 let selectedRuntime;
 let runtimeClient;
 let runtimeTransport;
@@ -36,6 +38,14 @@ let lastSyncStatus = {
 };
 let runtimeLock = Promise.resolve();
 let serverInstance;
+let dependencyStatus = {
+  ok: false,
+  pending: false,
+  checkedAt: null,
+  error: null
+};
+let lastDependencyAttemptMs = 0;
+let lastChildListError = null;
 
 function run(command, args, cwd, options = {}) {
   const result = spawnSync(command, args, {
@@ -191,22 +201,93 @@ function importFromProductMcp(productMcpDir, specifier) {
 
 async function loadSdk() {
   const productMcpDir = ensureProductMcpSdk();
-  const [serverModule, serverStdioModule, clientModule, clientStdioModule, typesModule] = await Promise.all([
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/server/index.js'),
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/server/stdio.js'),
+  const [clientModule, clientStdioModule] = await Promise.all([
     importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/index.js'),
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/stdio.js'),
-    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/types.js')
+    importFromProductMcp(productMcpDir, '@modelcontextprotocol/sdk/client/stdio.js')
   ]);
 
   sdk = {
-    Server: serverModule.Server,
-    StdioServerTransport: serverStdioModule.StdioServerTransport,
     Client: clientModule.Client,
-    StdioClientTransport: clientStdioModule.StdioClientTransport,
-    ListToolsRequestSchema: typesModule.ListToolsRequestSchema,
-    CallToolRequestSchema: typesModule.CallToolRequestSchema
+    StdioClientTransport: clientStdioModule.StdioClientTransport
   };
+}
+
+function beginLauncherDependencyLoad(options = {}) {
+  if (sdk) {
+    dependencyStatus = {
+      ok: true,
+      pending: false,
+      checkedAt: new Date().toISOString(),
+      error: null
+    };
+    return Promise.resolve(dependencyStatus);
+  }
+
+  const force = Boolean(options.force);
+  const now = Date.now();
+  if (!force && dependencyStatus.error && now - lastDependencyAttemptMs < dependencyRetryDelayMs) {
+    return null;
+  }
+
+  if (!sdkLoadPromise) {
+    lastDependencyAttemptMs = now;
+    dependencyStatus = {
+      ok: false,
+      pending: true,
+      checkedAt: new Date().toISOString(),
+      error: null
+    };
+
+    sdkLoadPromise = (async () => {
+      await new Promise((resolveImmediate) => setImmediate(resolveImmediate));
+      selectedRuntime ??= resolvePluginRuntime();
+      await loadSdk();
+      dependencyStatus = {
+        ok: true,
+        pending: false,
+        checkedAt: new Date().toISOString(),
+        error: null
+      };
+      await serverInstance?.sendToolListChanged?.().catch(() => undefined);
+      return dependencyStatus;
+    })().catch(async (error) => {
+      sdkLoadPromise = undefined;
+      dependencyStatus = {
+        ok: false,
+        pending: false,
+        checkedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error)
+      };
+      await serverInstance?.sendToolListChanged?.().catch(() => undefined);
+      throw error;
+    });
+  }
+
+  return sdkLoadPromise;
+}
+
+async function ensureLauncherDependencies(options = {}) {
+  if (sdk) {
+    dependencyStatus = {
+      ok: true,
+      pending: false,
+      checkedAt: new Date().toISOString(),
+      error: null
+    };
+    return dependencyStatus;
+  }
+
+  const promise = beginLauncherDependencyLoad({ force: Boolean(options.force) });
+  if (!promise) return dependencyStatus;
+
+  if (options.wait === false) return dependencyStatus;
+
+  try {
+    return await promise;
+  } catch (error) {
+    if (options.throwOnError) throw error;
+    return dependencyStatus;
+  }
 }
 
 function resolveBundledRuntime(error = null) {
@@ -293,6 +374,7 @@ async function stopRuntimeChild() {
 }
 
 async function startRuntimeChild() {
+  await ensureLauncherDependencies({ wait: true, throwOnError: true });
   selectedRuntime ??= resolvePluginRuntime();
 
   const transport = new sdk.StdioClientTransport({
@@ -479,6 +561,16 @@ function launcherStatus(extra = {}) {
       pendingRestart: pendingRuntimeRestart,
       cachedToolCount: childToolsCache.length
     },
+    dependencies: {
+      sdkLoaded: Boolean(sdk),
+      ...dependencyStatus,
+      node: {
+        version: process.version,
+        execPath: process.execPath,
+        platform: process.platform
+      },
+      lastChildListError
+    },
     sync: {
       lastSync: lastSyncStatus,
       nextAutomaticCheckInSeconds: Math.max(0, Math.ceil((runtimeUpdateCheckIntervalMs - (now - lastSyncMs)) / 1000))
@@ -530,6 +622,71 @@ function launcherTools() {
   ];
 }
 
+function fallbackRuntimeTools() {
+  return [
+    {
+      name: 'product_runtime_self_check',
+      title: 'Product MCP Runtime Self Check',
+      description:
+        'Fallback self-check exposed by the ERP Product launcher when the Product MCP runtime is not ready yet. It does not read Chrome or ERP token.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'product_runtime_status',
+      title: 'Product MCP Runtime Status',
+      description:
+        'Fallback runtime status exposed by the ERP Product launcher when the Product MCP runtime is not ready yet. It does not read Chrome or ERP token.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'product_auth_status',
+      title: 'ERP Login Status',
+      description:
+        'Fallback login status tool exposed by the ERP Product launcher when the Product MCP runtime is not ready yet. It explains why Chrome login cannot be checked yet.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          forceRefresh: {
+            type: 'boolean',
+            default: false,
+            description: 'Ignored by the fallback tool. Present for compatibility with Product MCP.'
+          }
+        },
+        additionalProperties: false
+      }
+    }
+  ];
+}
+
+function mergeTools(childTools) {
+  const tools = [...(childTools ?? [])];
+  const names = new Set(tools.map((tool) => tool.name));
+
+  for (const tool of fallbackRuntimeTools()) {
+    if (!names.has(tool.name)) {
+      tools.push(tool);
+      names.add(tool.name);
+    }
+  }
+
+  for (const tool of launcherTools()) {
+    if (!names.has(tool.name)) {
+      tools.push(tool);
+      names.add(tool.name);
+    }
+  }
+
+  return tools;
+}
+
 function isLauncherTool(name) {
   return launcherTools().some((tool) => tool.name === name);
 }
@@ -540,15 +697,31 @@ function isConnectionError(error) {
 }
 
 async function listTools() {
-  await syncPluginRuntime({ allowChildRestart: false });
-  const child = await ensureRuntimeChild();
-  const result = await child.listTools();
-  childToolsCache = result.tools ?? [];
+  if (!sdk) {
+    return {
+      tools: mergeTools([])
+    };
+  }
 
-  return {
-    ...result,
-    tools: [...childToolsCache, ...launcherTools()]
-  };
+  try {
+    await syncPluginRuntime({ allowChildRestart: false });
+    const child = await ensureRuntimeChild();
+    const result = await child.listTools();
+    childToolsCache = result.tools ?? [];
+    lastChildListError = null;
+
+    return {
+      ...result,
+      tools: mergeTools(childToolsCache)
+    };
+  } catch (error) {
+    lastChildListError = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`ERP Product runtime tool list failed: ${lastChildListError}\n`);
+
+    return {
+      tools: mergeTools([])
+    };
+  }
 }
 
 async function callChildTool(name, args, options = {}) {
@@ -580,6 +753,7 @@ async function callTool(request) {
   }
 
   if (name === 'product_runtime_launcher_refresh') {
+    const dependencyRefresh = await ensureLauncherDependencies({ force: true, wait: true });
     const syncResult = await syncPluginRuntime({ force: true, allowChildRestart: true });
     let restarted = syncResult.restarted;
     if (args.restart === true && runtimeClient && !restarted) {
@@ -592,6 +766,7 @@ async function callTool(request) {
     return jsonResult(
       launcherStatus({
         refresh: {
+          dependencies: dependencyRefresh,
           ...syncResult,
           restarted
         }
@@ -605,37 +780,162 @@ async function callTool(request) {
     });
   }
 
+  if (!sdk && ['product_runtime_self_check', 'product_runtime_status', 'product_auth_status'].includes(name)) {
+    const dependencies = await ensureLauncherDependencies({ wait: false });
+    return jsonResult(
+      launcherStatus({
+        ok: false,
+        code: dependencies.pending ? 'ERP_PRODUCT_RUNTIME_PREPARING' : 'ERP_PRODUCT_RUNTIME_NOT_READY',
+        readsChromeToken: false,
+        readsRemoteErp: false,
+        requestedTool: name,
+        agentGuidance: {
+          conclusion:
+            'ERP Product launcher is running, but Product MCP runtime dependencies are not ready yet. This is before Chrome DevTools MCP and before ERP token reading.',
+          nextAction:
+            dependencies.error
+              ? 'Report the launcher dependency error. After network/npm/GitHub access is recoverable, retry product_runtime_launcher_refresh.'
+              : 'Wait briefly or retry product_runtime_self_check; the launcher is preparing Product MCP runtime dependencies in the background.'
+        }
+      })
+    );
+  }
+
   const shouldApplyRuntimeUpdate = name === 'product_runtime_self_check' || name === 'product_runtime_refresh';
-  return callChildTool(name, args, {
-    forceRuntimeSync: shouldApplyRuntimeUpdate,
-    allowRuntimeRestart: shouldApplyRuntimeUpdate
-  });
+  try {
+    return await callChildTool(name, args, {
+      forceRuntimeSync: shouldApplyRuntimeUpdate,
+      allowRuntimeRestart: shouldApplyRuntimeUpdate
+    });
+  } catch (error) {
+    if (['product_runtime_self_check', 'product_runtime_status', 'product_auth_status'].includes(name)) {
+      return jsonResult(
+        launcherStatus({
+          ok: false,
+          code: 'ERP_PRODUCT_RUNTIME_NOT_READY',
+          readsChromeToken: false,
+          readsRemoteErp: false,
+          requestedTool: name,
+          error: error instanceof Error ? error.message : String(error),
+          agentGuidance: {
+            conclusion:
+              'ERP Product launcher is visible, but Product MCP runtime is not ready. This is before Chrome DevTools MCP and before ERP token reading.',
+            nextAction:
+              'Do not troubleshoot Chrome remote debugging yet. Check launcher dependencies, local Node visibility from Codex, GitHub/npm access, or retry product_runtime_launcher_refresh after network access is available.'
+          }
+        })
+      );
+    }
+
+    throw error;
+  }
 }
 
 async function startLauncherServer() {
-  const server = new sdk.Server(
-    {
-      name: 'erp-product-runtime-launcher',
-      version: launcherVersion
-    },
-    {
-      capabilities: {
-        tools: {
-          listChanged: true
-        }
-      },
-      instructions:
-        'ERP Product runtime launcher. It keeps a stable Codex MCP entry, updates the plugin runtime proxy from the fixed Git repository, and defers routine restarts to preserve active product workflows.'
+  let buffer = '';
+
+  function send(message) {
+    process.stdout.write(`${JSON.stringify(message)}\n`);
+  }
+
+  function sendResult(id, result) {
+    send({ jsonrpc: '2.0', id, result });
+  }
+
+  function sendError(id, code, message, data) {
+    send({
+      jsonrpc: '2.0',
+      id,
+      error: {
+        code,
+        message,
+        ...(data === undefined ? {} : { data })
+      }
+    });
+  }
+
+  async function handleMessage(message) {
+    if (!message || typeof message !== 'object') return;
+    const { id, method, params } = message;
+
+    if (typeof method === 'string' && method.startsWith('notifications/')) {
+      return;
     }
-  );
 
-  server.setRequestHandler(sdk.ListToolsRequestSchema, listTools);
-  server.setRequestHandler(sdk.CallToolRequestSchema, callTool);
+    try {
+      if (method === 'initialize') {
+        sendResult(id, {
+          protocolVersion: params?.protocolVersion || '2025-06-18',
+          capabilities: {
+            tools: {
+              listChanged: true
+            }
+          },
+          serverInfo: {
+            name: 'erp-product-runtime-launcher',
+            version: launcherVersion
+          },
+          instructions:
+            'ERP Product runtime launcher. It exposes diagnostic tools immediately, then prepares and proxies the Product MCP runtime without reading Chrome or ERP token during startup.'
+        });
+        return;
+      }
 
-  serverInstance = server;
+      if (method === 'ping') {
+        sendResult(id, {});
+        return;
+      }
 
-  const transport = new sdk.StdioServerTransport();
-  await server.connect(transport);
+      if (method === 'tools/list') {
+        sendResult(id, await listTools());
+        return;
+      }
+
+      if (method === 'tools/call') {
+        sendResult(
+          id,
+          await callTool({
+            params
+          })
+        );
+        return;
+      }
+
+      sendError(id, -32601, `Method not found: ${method}`);
+    } catch (error) {
+      sendError(id, -32603, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  serverInstance = {
+    sendToolListChanged: async () => {
+      send({
+        jsonrpc: '2.0',
+        method: 'notifications/tools/list_changed'
+      });
+    }
+  };
+
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf('\n');
+      if (newline === -1) break;
+
+      const line = buffer.slice(0, newline).replace(/\r$/, '');
+      buffer = buffer.slice(newline + 1);
+      if (!line.trim()) continue;
+
+      try {
+        handleMessage(JSON.parse(line)).catch((error) => {
+          process.stderr.write(`ERP Product launcher request failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        });
+      } catch (error) {
+        process.stderr.write(`ERP Product launcher received invalid JSON: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
+  });
 }
 
 async function shutdown() {
@@ -649,6 +949,4 @@ process.on('SIGTERM', () => {
   shutdown().finally(() => process.exit(0));
 });
 
-selectedRuntime = resolvePluginRuntime();
-await loadSdk();
 await startLauncherServer();
