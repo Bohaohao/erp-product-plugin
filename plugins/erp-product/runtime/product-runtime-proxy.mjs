@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
@@ -15,10 +15,17 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.3';
+const proxyVersion = '0.3.4';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
+const tokenDaemonStartTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_TOKEN_DAEMON_START_TIMEOUT_MS', 20_000);
+const tokenDaemonStopTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_TOKEN_DAEMON_STOP_TIMEOUT_MS', 5_000);
+const childToolStatusTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_STATUS_TIMEOUT_MS', 30_000);
+const childToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_QUERY_TIMEOUT_MS', 120_000);
+const childToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_AUTH_TIMEOUT_MS', 240_000);
+const childToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_CREATE_TIMEOUT_MS', 180_000);
+const childToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
@@ -31,6 +38,7 @@ let childTransport;
 let childStartedAt;
 let childRuntimeCommit;
 let childBridgeConfigHash;
+let childTokenDaemonStatus;
 let childToolsCache = [];
 let restartCount = 0;
 let pendingChildRuntimeRestart = null;
@@ -48,6 +56,17 @@ let startupStage = {
   action: null,
   detail: null
 };
+let tokenDaemonProcess;
+let tokenDaemonInfo;
+let tokenDaemonStartedAt;
+let tokenDaemonConfigHash;
+let tokenDaemonEntry;
+let tokenDaemonSourceCommit;
+let tokenDaemonStartPromise;
+let tokenDaemonLastError = null;
+let tokenDaemonLastExit = null;
+let tokenDaemonRestartCount = 0;
+let tokenDaemonMode = 'not_started';
 
 function run(command, args, cwd, options = {}) {
   const timeoutMs = options.timeoutMs ?? externalCommandTimeoutMs;
@@ -315,6 +334,10 @@ function hasProductMcp(dir) {
 
 function bridgeEntryFor(dir) {
   return join(dir, 'dist', 'localBridge.js');
+}
+
+function tokenDaemonEntryFor(dir) {
+  return join(dir, 'dist', 'tokenBridgeDaemon.js');
 }
 
 function runtimeDependencyFor(dir) {
@@ -653,6 +676,374 @@ function nodeManagerPathEntries(home = homedir()) {
   return entries.filter((entry) => existsSync(entry));
 }
 
+function tokenDaemonSupportedPlatform() {
+  return process.platform === 'win32' || process.platform === 'darwin';
+}
+
+function isTokenDaemonRunning() {
+  return Boolean(tokenDaemonProcess && tokenDaemonInfo && tokenDaemonProcess.exitCode === null && !tokenDaemonProcess.killed);
+}
+
+function redactedTokenDaemonInfo(info = tokenDaemonInfo) {
+  if (!info) return null;
+  return {
+    ok: info.ok === true,
+    url: info.url ?? null,
+    secretSet: Boolean(info.secret),
+    pid: info.pid ?? tokenDaemonProcess?.pid ?? null,
+    version: info.version ?? null
+  };
+}
+
+function redactTokenDaemonText(value) {
+  return String(value ?? '')
+    .replace(/("secret"\s*:\s*")[^"]*(")/gi, '$1[redacted]$2')
+    .replace(/(PRODUCT_TOKEN_DAEMON_SECRET=)[^\s"']+/gi, '$1[redacted]');
+}
+
+function tokenDaemonFailureResult(mode, message, fallback = {}) {
+  const diagnostic = diagnosticFromError(new Error(message), {
+    stage: 'runtime_proxy_token_daemon_start',
+    action: 'start Product MCP token bridge daemon',
+    command: process.execPath,
+    cwd: productMcpDir,
+    timeoutMs: tokenDaemonStartTimeoutMs,
+    detail: {
+      entry: fallback.entry ?? tokenDaemonEntryFor(productMcpDir),
+      configPath: runtimeBridgeConfig,
+      configHash: fallback.configHash ?? fileHash(runtimeBridgeConfig),
+      ...(fallback.detail || {})
+    },
+    ...fallback,
+    stdout: redactTokenDaemonText(fallback.stdout),
+    stderr: redactTokenDaemonText(fallback.stderr)
+  });
+
+  tokenDaemonMode = mode;
+  tokenDaemonLastError = diagnostic;
+  return {
+    ok: false,
+    mode,
+    diagnostic
+  };
+}
+
+function tokenDaemonStatus() {
+  const currentEntry = productMcpDir ? tokenDaemonEntryFor(productMcpDir) : null;
+  const statusEntry = tokenDaemonEntry ?? currentEntry;
+  const running = isTokenDaemonRunning();
+  const configHash = fileHash(runtimeBridgeConfig);
+
+  return {
+    mode: tokenDaemonMode,
+    supportedPlatform: tokenDaemonSupportedPlatform(),
+    running,
+    entry: statusEntry,
+    currentEntry,
+    currentEntryExists: currentEntry ? existsSync(currentEntry) : false,
+    command: statusEntry ? commandLine(process.execPath, [statusEntry, '--config', runtimeBridgeConfig]) : null,
+    cwd: statusEntry ? dirname(dirname(statusEntry)) : productMcpDir,
+    startedAt: running ? tokenDaemonStartedAt : null,
+    info: running ? redactedTokenDaemonInfo() : null,
+    configPath: runtimeBridgeConfig,
+    configHash: tokenDaemonConfigHash ?? null,
+    currentConfigHash: configHash,
+    configMatchesCurrent: running ? Boolean(tokenDaemonConfigHash && configHash && tokenDaemonConfigHash === configHash) : null,
+    sourceCommit: tokenDaemonSourceCommit ?? null,
+    restartCount: tokenDaemonRestartCount,
+    lastError: tokenDaemonLastError,
+    lastExit: tokenDaemonLastExit,
+    fallbackActive: String(tokenDaemonMode).startsWith('legacy_')
+  };
+}
+
+function tokenDaemonEnv() {
+  if (!isTokenDaemonRunning()) return {};
+  return {
+    PRODUCT_TOKEN_DAEMON_URL: tokenDaemonInfo.url,
+    PRODUCT_TOKEN_DAEMON_SECRET: tokenDaemonInfo.secret
+  };
+}
+
+function childToolTimeoutMs(name) {
+  if (name === 'product_auth_status' || name === 'product_runtime_self_check' || name === 'product_runtime_refresh') {
+    return childToolAuthTimeoutMs;
+  }
+  if (name === 'product_upload_file') return childToolUploadTimeoutMs;
+  if (name === 'product_create') return childToolCreateTimeoutMs;
+  if (name === 'product_runtime_status' || name === 'product_bridge_config_status') return childToolStatusTimeoutMs;
+  return childToolQueryTimeoutMs;
+}
+
+function childTokenDaemonStatusFromResult(result) {
+  if (result?.ok && tokenDaemonInfo) {
+    return {
+      mode: 'daemon',
+      running: true,
+      url: tokenDaemonInfo.url,
+      secretSet: Boolean(tokenDaemonInfo.secret),
+      pid: tokenDaemonInfo.pid ?? tokenDaemonProcess?.pid ?? null,
+      version: tokenDaemonInfo.version ?? null,
+      configHash: tokenDaemonConfigHash ?? null,
+      entry: tokenDaemonEntry ?? null,
+      reused: Boolean(result.reused)
+    };
+  }
+
+  return {
+    mode: result?.mode ?? tokenDaemonMode,
+    running: false,
+    url: null,
+    secretSet: false,
+    diagnostic: result?.diagnostic ?? tokenDaemonLastError
+  };
+}
+
+function startTokenDaemonProcess(entry, configHash) {
+  const args = [entry, '--config', runtimeBridgeConfig];
+  const cwd = productMcpDir;
+  let stdoutText = '';
+  let stderrText = '';
+  let stdoutBuffer = '';
+  let settled = false;
+  let timeout;
+
+  tokenDaemonMode = 'starting';
+  tokenDaemonLastError = null;
+  tokenDaemonLastExit = null;
+  tokenDaemonEntry = entry;
+  tokenDaemonConfigHash = configHash;
+  tokenDaemonSourceCommit = gitHeadSafe(productMcpDir);
+
+  return new Promise((resolveStart) => {
+    const child = spawn(process.execPath, args, {
+      cwd,
+      env: processEnv(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true
+    });
+
+    tokenDaemonProcess = child;
+
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      resolveStart(result);
+    }
+
+    function fail(message, fallback = {}) {
+      const result = tokenDaemonFailureResult('legacy_start_failed', message, {
+        command: process.execPath,
+        args,
+        cwd,
+        stdout: stdoutText,
+        stderr: stderrText,
+        entry,
+        configHash,
+        ...fallback
+      });
+
+      tokenDaemonInfo = undefined;
+      tokenDaemonStartedAt = undefined;
+      process.stderr.write(
+        `Product MCP token daemon unavailable; falling back to legacy localBridge token path: ${result.diagnostic.reason}\n`
+      );
+
+      if (child.exitCode === null && !child.killed) {
+        child.kill('SIGTERM');
+      }
+
+      finish(result);
+    }
+
+    function handleHandshakeLine(line) {
+      const text = line.trim();
+      if (!text) return;
+
+      stdoutText = snippet(`${stdoutText}\n${text}`);
+
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        fail(`Product MCP token daemon returned invalid startup JSON: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+
+      if (parsed?.ok !== true || !parsed.url || !parsed.secret) {
+        fail('Product MCP token daemon startup JSON was missing ok/url/secret fields.');
+        return;
+      }
+
+      tokenDaemonInfo = {
+        ok: true,
+        url: String(parsed.url),
+        secret: String(parsed.secret),
+        pid: parsed.pid ?? child.pid ?? null,
+        version: parsed.version ?? null
+      };
+      tokenDaemonStartedAt = new Date().toISOString();
+      tokenDaemonMode = 'daemon';
+      tokenDaemonLastError = null;
+
+      process.stderr.write(
+        `Product MCP token daemon started: ${tokenDaemonInfo.url} (pid ${tokenDaemonInfo.pid ?? child.pid ?? 'unknown'})\n`
+      );
+      finish({
+        ok: true,
+        mode: 'daemon',
+        info: tokenDaemonInfo
+      });
+    }
+
+    timeout = setTimeout(() => {
+      fail(`Product MCP token daemon startup timed out after ${Math.ceil(tokenDaemonStartTimeoutMs / 1000)}s.`, {
+        timedOut: true
+      });
+    }, tokenDaemonStartTimeoutMs);
+
+    child.stdout?.on('data', (chunk) => {
+      stdoutBuffer += chunk.toString();
+
+      while (true) {
+        const newline = stdoutBuffer.indexOf('\n');
+        if (newline === -1) break;
+
+        const line = stdoutBuffer.slice(0, newline).replace(/\r$/, '');
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+
+        if (!settled) {
+          handleHandshakeLine(line);
+        } else if (line.trim()) {
+          process.stderr.write(`[Product MCP token daemon] ${redactTokenDaemonText(line)}\n`);
+        }
+      }
+    });
+
+    child.stderr?.on('data', (chunk) => {
+      const text = chunk.toString();
+      stderrText = snippet(`${stderrText}\n${text}`);
+      process.stderr.write(redactTokenDaemonText(text));
+    });
+
+    child.once('error', (error) => {
+      fail(error instanceof Error ? error.message : String(error));
+    });
+
+    child.once('exit', (code, signal) => {
+      tokenDaemonLastExit = {
+        at: new Date().toISOString(),
+        code,
+        signal
+      };
+
+      if (!settled) {
+        fail(`Product MCP token daemon exited before startup completed with code ${code ?? 'null'} and signal ${signal ?? 'null'}.`, {
+          exitCode: code,
+          signal
+        });
+        return;
+      }
+
+      if (tokenDaemonProcess === child) {
+        tokenDaemonProcess = undefined;
+        if (tokenDaemonInfo) {
+          tokenDaemonInfo = undefined;
+          tokenDaemonStartedAt = undefined;
+          tokenDaemonMode = shuttingDown ? 'stopped' : 'exited';
+        }
+      }
+    });
+  });
+}
+
+async function stopTokenDaemon(reason = 'shutdown') {
+  const child = tokenDaemonProcess;
+  if (!child) {
+    tokenDaemonInfo = undefined;
+    tokenDaemonStartedAt = undefined;
+    if (tokenDaemonMode !== 'not_started') tokenDaemonMode = 'stopped';
+    return;
+  }
+
+  tokenDaemonMode = 'stopping';
+  process.stderr.write(`Stopping Product MCP token daemon: ${reason}\n`);
+
+  await new Promise((resolveStop) => {
+    let resolved = false;
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      resolveStop();
+    };
+    const timer = setTimeout(() => {
+      if (child.exitCode === null && !child.killed) {
+        child.kill('SIGKILL');
+      }
+      done();
+    }, tokenDaemonStopTimeoutMs);
+
+    child.once('exit', done);
+    if (child.exitCode === null && !child.killed) {
+      child.kill('SIGTERM');
+    } else {
+      done();
+    }
+  });
+
+  if (tokenDaemonProcess === child) {
+    tokenDaemonProcess = undefined;
+  }
+  tokenDaemonInfo = undefined;
+  tokenDaemonStartedAt = undefined;
+  tokenDaemonMode = 'stopped';
+}
+
+async function ensureTokenDaemon(options = {}) {
+  const configHash = options.configHash ?? fileHash(runtimeBridgeConfig);
+  const currentEntry = tokenDaemonEntryFor(productMcpDir);
+
+  if (isTokenDaemonRunning()) {
+    if (tokenDaemonConfigHash && configHash && tokenDaemonConfigHash !== configHash && existsSync(currentEntry)) {
+      tokenDaemonRestartCount += 1;
+      await stopTokenDaemon('bridge config changed');
+    } else {
+      return {
+        ok: true,
+        mode: 'daemon',
+        info: tokenDaemonInfo,
+        reused: true
+      };
+    }
+  }
+
+  if (tokenDaemonStartPromise) {
+    return tokenDaemonStartPromise;
+  }
+
+  if (!tokenDaemonSupportedPlatform()) {
+    return tokenDaemonFailureResult('legacy_unsupported_platform', `Product MCP token daemon is not enabled on ${process.platform}.`, {
+      entry: currentEntry,
+      configHash
+    });
+  }
+
+  if (!existsSync(currentEntry)) {
+    return tokenDaemonFailureResult('legacy_entry_missing', `Product MCP token daemon entry is unavailable: ${currentEntry}`, {
+      entry: currentEntry,
+      configHash
+    });
+  }
+
+  tokenDaemonStartPromise = startTokenDaemonProcess(currentEntry, configHash).finally(() => {
+    tokenDaemonStartPromise = undefined;
+  });
+
+  return tokenDaemonStartPromise;
+}
+
 async function stopChildRuntime() {
   const client = childClient;
   const transport = childTransport;
@@ -662,6 +1053,7 @@ async function stopChildRuntime() {
   childStartedAt = undefined;
   childRuntimeCommit = undefined;
   childBridgeConfigHash = undefined;
+  childTokenDaemonStatus = undefined;
 
   if (client) {
     await client.close().catch((error) => {
@@ -680,12 +1072,17 @@ async function startChildRuntime() {
     ensureProductMcp({ ...productMcp, updated: true });
   }
   const bridgeConfigHash = syncRuntimeBridgeConfig();
+  const daemonResult = await ensureTokenDaemon({ configHash: bridgeConfigHash });
+  const childEnv = {
+    ...processEnv(),
+    ...tokenDaemonEnv()
+  };
 
   const transport = new sdk.StdioClientTransport({
     command: process.execPath,
     args: [bridgeEntry, '--config', runtimeBridgeConfig],
     cwd: productMcpDir,
-    env: processEnv(),
+    env: childEnv,
     stderr: 'inherit'
   });
 
@@ -705,6 +1102,7 @@ async function startChildRuntime() {
       childStartedAt = undefined;
       childRuntimeCommit = undefined;
       childBridgeConfigHash = undefined;
+      childTokenDaemonStatus = undefined;
     }
   };
 
@@ -715,6 +1113,7 @@ async function startChildRuntime() {
   childStartedAt = new Date().toISOString();
   childRuntimeCommit = gitHeadSafe(productMcpDir);
   childBridgeConfigHash = bridgeConfigHash;
+  childTokenDaemonStatus = childTokenDaemonStatusFromResult(daemonResult);
   childToolsCache = [];
 
   process.stderr.write(`Product MCP child runtime started: ${productMcpDir}\n`);
@@ -880,10 +1279,12 @@ function runtimeStatus(extra = {}) {
       startedAt: childStartedAt ?? null,
       commit: childRuntimeCommit ?? null,
       bridgeConfigHash: childBridgeConfigHash ?? null,
+      tokenDaemon: childTokenDaemonStatus ?? null,
       restartCount,
       pendingRestart: pendingChildRuntimeRestart,
       cachedToolCount: childToolsCache.length
     },
+    tokenDaemon: tokenDaemonStatus(),
     bridgeConfig: {
       sourcePath: sourceBridgeConfig,
       runtimePath: runtimeBridgeConfig,
@@ -944,6 +1345,7 @@ async function runtimeSelfCheck() {
   const sourceHash = status.bridgeConfig.sourceHash;
   const runtimeHash = status.bridgeConfig.runtimeHash;
   const childHash = status.childRuntime.bridgeConfigHash;
+  const tokenDaemon = status.tokenDaemon;
 
   const checks = [
     {
@@ -968,6 +1370,26 @@ async function runtimeSelfCheck() {
       }
     },
     {
+      name: 'token_daemon_or_legacy_fallback_available',
+      ok: Boolean(tokenDaemon.running || tokenDaemon.fallbackActive),
+      detail: {
+        mode: tokenDaemon.mode,
+        supportedPlatform: tokenDaemon.supportedPlatform,
+        running: tokenDaemon.running,
+        entry: tokenDaemon.entry,
+        currentEntryExists: tokenDaemon.currentEntryExists,
+        url: tokenDaemon.info?.url ?? null,
+        lastExit: tokenDaemon.lastExit,
+        lastError: tokenDaemon.lastError
+          ? {
+              stage: tokenDaemon.lastError.stage,
+              reason: tokenDaemon.lastError.reason,
+              kind: tokenDaemon.lastError.kind
+            }
+          : null
+      }
+    },
+    {
       name: 'child_config_status_available',
       ok: Boolean(childConfigStatus?.ok),
       detail: childConfigError ? { error: childConfigError } : { available: true }
@@ -978,6 +1400,29 @@ async function runtimeSelfCheck() {
       detail: expectedConfig.ok ? { environment: expectedConfig.environment, projectUrl: expectedConfig.projectUrl } : expectedConfig
     }
   ];
+
+  if (tokenDaemon.running) {
+    checks.push({
+      name: 'token_daemon_config_matches_runtime_config',
+      ok: tokenDaemon.configMatchesCurrent === true,
+      detail: {
+        daemonConfigHash: tokenDaemon.configHash,
+        runtimeConfigHash: tokenDaemon.currentConfigHash
+      }
+    });
+
+    checks.push({
+      name: 'child_token_daemon_env_matches_daemon',
+      ok: status.childRuntime.tokenDaemon?.url === tokenDaemon.info?.url && status.childRuntime.tokenDaemon?.secretSet === true,
+      detail: {
+        daemonUrl: tokenDaemon.info?.url ?? null,
+        childUrl: status.childRuntime.tokenDaemon?.url ?? null,
+        childSecretSet: status.childRuntime.tokenDaemon?.secretSet ?? false,
+        daemonVersion: tokenDaemon.info?.version ?? null,
+        childDaemonVersion: status.childRuntime.tokenDaemon?.version ?? null
+      }
+    });
+  }
 
   if (childConfigStatus?.ok && expectedConfig.ok) {
     checks.push(
@@ -1018,6 +1463,7 @@ async function runtimeSelfCheck() {
     autoFixAttempted: {
       syncProductMcp: true,
       syncBridgeConfig: true,
+      startOrReuseTokenDaemon: true,
       restartChildRuntimeOnChange: true
     },
     sync: syncResult
@@ -1042,6 +1488,7 @@ async function runtimeSelfCheck() {
           bridgeVersion: childConfigStatus.bridge?.version
         }
       : null,
+    tokenDaemon: status.tokenDaemon,
     checks,
     runtime: status,
     agentGuidance: ok
@@ -1131,7 +1578,7 @@ async function callChildTool(name, args) {
 
   let child = await ensureChildRuntime();
   try {
-    return await child.callTool({ name, arguments: args });
+    return await child.callTool({ name, arguments: args }, undefined, { timeout: childToolTimeoutMs(name) });
   } catch (error) {
     if (!isConnectionError(error)) {
       throw error;
@@ -1141,7 +1588,7 @@ async function callChildTool(name, args) {
       await restartChildRuntime('child runtime connection was closed');
     });
     child = await ensureChildRuntime();
-    return child.callTool({ name, arguments: args });
+    return child.callTool({ name, arguments: args }, undefined, { timeout: childToolTimeoutMs(name) });
   }
 }
 
@@ -1215,6 +1662,7 @@ async function startProxyServer() {
 
 async function shutdown() {
   await stopChildRuntime();
+  await stopTokenDaemon('runtime proxy shutdown');
 }
 
 let shuttingDown = false;

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.15';
+const launcherVersion = '0.3.16';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -21,6 +21,11 @@ const dependencyRetryDelayMs = 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
 const runtimeChildStartTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_CHILD_START_TIMEOUT_MS', 240_000);
+const runtimeToolStatusTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_STATUS_TIMEOUT_MS', 30_000);
+const runtimeToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_QUERY_TIMEOUT_MS', 120_000);
+const runtimeToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_AUTH_TIMEOUT_MS', 240_000);
+const runtimeToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_CREATE_TIMEOUT_MS', 180_000);
+const runtimeToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
@@ -1080,6 +1085,22 @@ function isConnectionError(error) {
   return /not connected|connection.*closed|transport.*closed|stdio/i.test(message);
 }
 
+function runtimeToolTimeoutMs(name) {
+  if (name === 'product_auth_status' || name === 'product_runtime_self_check' || name === 'product_runtime_refresh') {
+    return runtimeToolAuthTimeoutMs;
+  }
+  if (name === 'product_upload_file') return runtimeToolUploadTimeoutMs;
+  if (name === 'product_create') return runtimeToolCreateTimeoutMs;
+  if (
+    name === 'product_runtime_status' ||
+    name === 'product_runtime_launcher_status' ||
+    name === 'product_bridge_config_status'
+  ) {
+    return runtimeToolStatusTimeoutMs;
+  }
+  return runtimeToolQueryTimeoutMs;
+}
+
 async function listTools() {
   if (!sdk) {
     return {
@@ -1116,7 +1137,7 @@ async function callChildTool(name, args, options = {}) {
 
   let child = await ensureRuntimeChild();
   try {
-    return await child.callTool({ name, arguments: args });
+    return await child.callTool({ name, arguments: args }, undefined, { timeout: runtimeToolTimeoutMs(name) });
   } catch (error) {
     if (!isConnectionError(error)) throw error;
 
@@ -1124,7 +1145,7 @@ async function callChildTool(name, args, options = {}) {
       await restartRuntimeChild('runtime proxy connection was closed');
     });
     child = await ensureRuntimeChild();
-    return child.callTool({ name, arguments: args });
+    return child.callTool({ name, arguments: args }, undefined, { timeout: runtimeToolTimeoutMs(name) });
   }
 }
 
