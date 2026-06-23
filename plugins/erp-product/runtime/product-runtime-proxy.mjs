@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.4';
+const proxyVersion = '0.3.5';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -1552,6 +1552,144 @@ function proxyTools() {
   ];
 }
 
+function productFallbackTools() {
+  return [
+    {
+      name: 'product_bridge_config_status',
+      title: 'Product bridge config status',
+      description:
+        'Fallback declaration for the Product MCP bridge config status tool. The proxy forwards calls to the Product MCP child runtime once ready.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'product_auth_status',
+      title: 'ERP Login Status',
+      description:
+        'Fallback declaration for checking ERP login state through the Product MCP child runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          forceRefresh: {
+            type: 'boolean',
+            default: false,
+            description: 'Bypass the token cache and read the ERP login token from Chrome again.'
+          }
+        },
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'product_precheck_package',
+      title: 'Precheck product package',
+      description:
+        'Fallback declaration for prechecking a local ERP product material package before upload/create. The real Product MCP child validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_upload_file',
+      title: 'Upload product file',
+      description:
+        'Fallback declaration for uploading a local product file to OSS. The real Product MCP child validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_create',
+      title: 'Create product',
+      description:
+        'Fallback declaration for creating an ERP product. The real Product MCP child validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_categories',
+      title: 'List product categories',
+      description: 'Fallback declaration for querying ERP product categories.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_category_config',
+      title: 'Get product category config',
+      description: 'Fallback declaration for querying ERP category units/configuration.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_suppliers',
+      title: 'List suppliers',
+      description: 'Fallback declaration for querying ERP supplier options.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_regions',
+      title: 'List product regions',
+      description: 'Fallback declaration for querying ERP region options.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_dict',
+      title: 'Get system dict',
+      description: 'Fallback declaration for querying ERP system dictionary values.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_detail',
+      title: 'Get product detail',
+      description: 'Fallback declaration for querying ERP product detail after creation.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    }
+  ];
+}
+
+function mergeToolDeclarations(primaryTools, fallbackTools) {
+  const tools = [...(primaryTools ?? [])];
+  const names = new Set(tools.map((tool) => tool.name));
+  for (const tool of fallbackTools) {
+    if (!names.has(tool.name)) {
+      tools.push(tool);
+      names.add(tool.name);
+    }
+  }
+  return tools;
+}
+
 function isProxyTool(name) {
   return proxyTools().some((tool) => tool.name === name);
 }
@@ -1563,14 +1701,21 @@ function isConnectionError(error) {
 
 async function listTools() {
   await syncProductMcp({ allowChildRestart: false });
-  const child = await ensureChildRuntime();
-  const result = await child.listTools();
-  childToolsCache = result.tools ?? [];
+  try {
+    const child = await ensureChildRuntime();
+    const result = await child.listTools();
+    childToolsCache = result.tools ?? [];
 
-  return {
-    ...result,
-    tools: [...childToolsCache, ...proxyTools()]
-  };
+    return {
+      ...result,
+      tools: mergeToolDeclarations(childToolsCache, [...productFallbackTools(), ...proxyTools()])
+    };
+  } catch (error) {
+    process.stderr.write(`Product MCP child tool list failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    return {
+      tools: mergeToolDeclarations([], [...productFallbackTools(), ...proxyTools()])
+    };
+  }
 }
 
 async function callChildTool(name, args) {

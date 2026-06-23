@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.16';
+const launcherVersion = '0.3.17';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -1050,6 +1050,116 @@ function fallbackRuntimeTools() {
           }
         },
         additionalProperties: false
+      }
+    },
+    {
+      name: 'product_bridge_config_status',
+      title: 'Product bridge config status',
+      description:
+        'Fallback declaration for the Product MCP bridge config status tool. The launcher forwards calls to the runtime child once ready.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false
+      }
+    },
+    {
+      name: 'product_precheck_package',
+      title: 'Precheck product package',
+      description:
+        'Fallback declaration for prechecking a local ERP product material package before upload/create. The real Product MCP runtime validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_upload_file',
+      title: 'Upload product file',
+      description:
+        'Fallback declaration for uploading a local product file to OSS through the Product MCP runtime. The real Product MCP runtime validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_create',
+      title: 'Create product',
+      description:
+        'Fallback declaration for creating an ERP product through the Product MCP runtime. The real Product MCP runtime validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_categories',
+      title: 'List product categories',
+      description:
+        'Fallback declaration for querying ERP product categories through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_category_config',
+      title: 'Get product category config',
+      description:
+        'Fallback declaration for querying ERP category units/configuration through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_suppliers',
+      title: 'List suppliers',
+      description:
+        'Fallback declaration for querying ERP supplier options through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_list_regions',
+      title: 'List product regions',
+      description:
+        'Fallback declaration for querying ERP region options through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_dict',
+      title: 'Get system dict',
+      description:
+        'Fallback declaration for querying ERP system dictionary values through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_get_detail',
+      title: 'Get product detail',
+      description:
+        'Fallback declaration for querying ERP product detail after creation through the Product MCP runtime.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
       }
     }
   ];
