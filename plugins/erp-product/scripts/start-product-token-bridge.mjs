@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.18';
+const launcherVersion = '0.3.19';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -26,6 +26,7 @@ const runtimeToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TO
 const runtimeToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_AUTH_TIMEOUT_MS', 240_000);
 const runtimeToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_CREATE_TIMEOUT_MS', 180_000);
 const runtimeToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
+const selfCheckReuseTtlMs = positiveIntegerFromEnv('ERP_PRODUCT_SELF_CHECK_REUSE_TTL_MS', 120_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
@@ -46,6 +47,8 @@ let lastSyncStatus = {
   source: null,
   error: null
 };
+let launcherSelfCheckCache = null;
+let launcherSelfCheckInFlight = null;
 let runtimeLock = Promise.resolve();
 let serverInstance;
 let dependencyStatus = {
@@ -979,6 +982,87 @@ function jsonResult(payload) {
   };
 }
 
+function parseJsonToolResult(result) {
+  const text = result?.content?.find((item) => item.type === 'text')?.text;
+  if (!text) {
+    throw new Error('Tool returned no text JSON payload.');
+  }
+
+  return JSON.parse(text);
+}
+
+function isLauncherSelfCheckCacheFresh() {
+  if (!launcherSelfCheckCache || pendingRuntimeRestart) return false;
+
+  const ageMs = Date.now() - launcherSelfCheckCache.cachedAtMs;
+  return (
+    ageMs >= 0 &&
+    ageMs < selfCheckReuseTtlMs &&
+    launcherSelfCheckCache.runtimeRestartCount === runtimeRestartCount &&
+    launcherSelfCheckCache.runtimeCommit === selectedRuntime?.commit &&
+    launcherSelfCheckCache.runtimeEntry === selectedRuntime?.entry
+  );
+}
+
+function withLauncherSelfCheckReuse(payload, source, cachedAtMs = launcherSelfCheckCache?.cachedAtMs ?? Date.now()) {
+  return {
+    ...payload,
+    launcherSelfCheckReuse: {
+      enabled: true,
+      reused: source !== 'fresh',
+      source,
+      ttlSeconds: Math.ceil(selfCheckReuseTtlMs / 1000),
+      cachedAt: new Date(cachedAtMs).toISOString(),
+      ageSeconds: Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000)),
+      forceRefreshSupported: true
+    }
+  };
+}
+
+async function forwardedRuntimeSelfCheckWithReuse(args = {}) {
+  const forceRefresh = args.forceRefresh === true;
+
+  if (!forceRefresh && isLauncherSelfCheckCacheFresh()) {
+    return withLauncherSelfCheckReuse(launcherSelfCheckCache.payload, 'cache', launcherSelfCheckCache.cachedAtMs);
+  }
+
+  if (!forceRefresh && launcherSelfCheckInFlight) {
+    const payload = await launcherSelfCheckInFlight;
+    return withLauncherSelfCheckReuse(payload, 'in_flight');
+  }
+
+  const childArgs = forceRefresh ? { ...args, forceRefresh: true } : { ...args };
+  if (!forceRefresh) delete childArgs.forceRefresh;
+
+  launcherSelfCheckInFlight = callChildTool(
+    'product_runtime_self_check',
+    childArgs,
+    {
+      forceRuntimeSync: true,
+      allowRuntimeRestart: true
+    }
+  )
+    .then((result) => {
+      const payload = parseJsonToolResult(result);
+      if (payload?.ok === true) {
+        launcherSelfCheckCache = {
+          payload,
+          cachedAtMs: Date.now(),
+          runtimeRestartCount,
+          runtimeCommit: selectedRuntime?.commit,
+          runtimeEntry: selectedRuntime?.entry
+        };
+      }
+      return payload;
+    })
+    .finally(() => {
+      launcherSelfCheckInFlight = null;
+    });
+
+  const payload = await launcherSelfCheckInFlight;
+  return withLauncherSelfCheckReuse(payload, 'fresh', Date.now());
+}
+
 function launcherTools() {
   return [
     {
@@ -1020,7 +1104,13 @@ function fallbackRuntimeTools() {
         'Fallback self-check exposed by the ERP Product launcher when the Product MCP runtime is not ready yet. It does not read Chrome or ERP token.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          forceRefresh: {
+            type: 'boolean',
+            default: false,
+            description: 'Bypass the short self-check reuse cache and run the full runtime refresh/check.'
+          }
+        },
         additionalProperties: false
       }
     },
@@ -1404,7 +1494,11 @@ async function callTool(request) {
     );
   }
 
-  const shouldApplyRuntimeUpdate = name === 'product_runtime_self_check' || name === 'product_runtime_refresh';
+  if (name === 'product_runtime_self_check') {
+    return jsonResult(await forwardedRuntimeSelfCheckWithReuse(args));
+  }
+
+  const shouldApplyRuntimeUpdate = name === 'product_runtime_refresh';
   try {
     return await callChildTool(name, args, {
       forceRuntimeSync: shouldApplyRuntimeUpdate,

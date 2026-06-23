@@ -35,9 +35,13 @@ ERP Product plugin `0.3.17` and later predeclares known Product MCP business too
 
 Product MCP bridge `0.1.15` and ERP Product plugin `0.3.18` and later expose `product_check_name_duplicate`. Treat it as a mandatory create gate: after `product_precheck_package` required-field validation passes and before any file upload or create call, check `draft.productNameCn` / the package Chinese product name. If the tool returns `exists: true` or `blocking: true`, stop this product's workflow and report the duplicate instead of uploading files.
 
+ERP Product plugin `0.3.19` and later reuses successful `product_runtime_self_check` results for a short window and coalesces concurrent calls. In a multi-agent batch, the controller/orchestrator should run `product_runtime_self_check` and `product_auth_status` once before dispatching workers, then pass the verified runtime/auth conclusion to workers. Workers that receive that controller verification must not repeat `product_runtime_self_check` just because their first `product_*` lookup sees a cached token; they should proceed with package precheck, duplicate-name check, reference lookup, upload, and create. A worker may call `product_runtime_self_check` only if the controller did not provide verification, the required tool is genuinely missing/stale, or a runtime/config error occurs. Use `product_runtime_self_check({ "forceRefresh": true })` only for explicit refresh, stale-config diagnosis, or update acceptance.
+
 ## First Step
 
 Call `product_runtime_self_check` before the first backend lookup, upload, or create operation in a thread, and whenever a stale URL, plugin update, marketplace reinstall, or missing/stale tool is suspected. The stable Runtime Launcher applies plugin runtime proxy updates before forwarding this self-check, and the self-check then verifies and refreshes the Product MCP runtime and effective bridge config. It does not read Chrome or the ERP token. If it returns `ok: true`, continue with `product_auth_status`. If it returns `ok: false`, follow its `agentGuidance` and report the conclusion in plain language.
+
+For multi-agent batches, the controller's successful `product_runtime_self_check` satisfies this first-step requirement for dispatched workers in the same batch. Workers should trust the controller-provided runtime/auth verification and should not run another self-check unless they hit a concrete runtime/tool/config failure.
 
 Call `product_auth_status` after runtime self-check passes and before any backend lookup, upload, or create operation. This preflights and warms `chrome-devtools-mcp` through npm before checking the Chrome ERP login token.
 

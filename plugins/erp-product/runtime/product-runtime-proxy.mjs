@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.6';
+const proxyVersion = '0.3.7';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -26,6 +26,7 @@ const childToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_Q
 const childToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_AUTH_TIMEOUT_MS', 240_000);
 const childToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_CREATE_TIMEOUT_MS', 180_000);
 const childToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
+const selfCheckReuseTtlMs = positiveIntegerFromEnv('ERP_PRODUCT_SELF_CHECK_REUSE_TTL_MS', 120_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
 
@@ -50,6 +51,8 @@ let lastSyncStatus = {
   source: null,
   error: null
 };
+let runtimeSelfCheckCache = null;
+let runtimeSelfCheckInFlight = null;
 let runtimeLock = Promise.resolve();
 let startupStage = {
   stage: null,
@@ -1510,6 +1513,65 @@ async function runtimeSelfCheck() {
   };
 }
 
+function isRuntimeSelfCheckCacheFresh() {
+  if (!runtimeSelfCheckCache || pendingChildRuntimeRestart) return false;
+
+  const ageMs = Date.now() - runtimeSelfCheckCache.cachedAtMs;
+  return (
+    ageMs >= 0 &&
+    ageMs < selfCheckReuseTtlMs &&
+    runtimeSelfCheckCache.restartCount === restartCount &&
+    runtimeSelfCheckCache.childRuntimeCommit === childRuntimeCommit &&
+    runtimeSelfCheckCache.childBridgeConfigHash === childBridgeConfigHash
+  );
+}
+
+function withRuntimeSelfCheckReuse(payload, source, cachedAtMs = runtimeSelfCheckCache?.cachedAtMs ?? Date.now()) {
+  return {
+    ...payload,
+    selfCheckReuse: {
+      enabled: true,
+      reused: source !== 'fresh',
+      source,
+      ttlSeconds: Math.ceil(selfCheckReuseTtlMs / 1000),
+      cachedAt: new Date(cachedAtMs).toISOString(),
+      ageSeconds: Math.max(0, Math.floor((Date.now() - cachedAtMs) / 1000)),
+      forceRefreshSupported: true
+    }
+  };
+}
+
+async function runtimeSelfCheckWithReuse(options = {}) {
+  if (!options.forceRefresh && isRuntimeSelfCheckCacheFresh()) {
+    return withRuntimeSelfCheckReuse(runtimeSelfCheckCache.payload, 'cache', runtimeSelfCheckCache.cachedAtMs);
+  }
+
+  if (!options.forceRefresh && runtimeSelfCheckInFlight) {
+    const payload = await runtimeSelfCheckInFlight;
+    return withRuntimeSelfCheckReuse(payload, 'in_flight');
+  }
+
+  runtimeSelfCheckInFlight = runtimeSelfCheck()
+    .then((payload) => {
+      if (payload?.ok === true) {
+        runtimeSelfCheckCache = {
+          payload,
+          cachedAtMs: Date.now(),
+          restartCount,
+          childRuntimeCommit,
+          childBridgeConfigHash
+        };
+      }
+      return payload;
+    })
+    .finally(() => {
+      runtimeSelfCheckInFlight = null;
+    });
+
+  const payload = await runtimeSelfCheckInFlight;
+  return withRuntimeSelfCheckReuse(payload, 'fresh', Date.now());
+}
+
 function proxyTools() {
   return [
     {
@@ -1519,7 +1581,13 @@ function proxyTools() {
         'Self-check and self-heal the Product MCP runtime without reading Chrome or ERP token. Verifies plugin config hashes, child runtime config, effective project URL, and URL prefixes so the AI can report the conclusion instead of asking the user to validate.',
       inputSchema: {
         type: 'object',
-        properties: {},
+        properties: {
+          forceRefresh: {
+            type: 'boolean',
+            default: false,
+            description: 'Bypass the short self-check reuse cache and run the full runtime refresh/check.'
+          }
+        },
         additionalProperties: false
       }
     },
@@ -1759,7 +1827,7 @@ async function callTool(request) {
   const args = request.params.arguments ?? {};
 
   if (name === 'product_runtime_self_check') {
-    return jsonResult(await runtimeSelfCheck());
+    return jsonResult(await runtimeSelfCheckWithReuse({ forceRefresh: args.forceRefresh === true }));
   }
 
   if (name === 'product_runtime_status') {
