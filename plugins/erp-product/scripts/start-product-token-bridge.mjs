@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.17';
+const launcherVersion = '0.3.18';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -1082,6 +1082,23 @@ function fallbackRuntimeTools() {
       inputSchema: {
         type: 'object',
         properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_check_name_duplicate',
+      title: 'Check duplicate product name',
+      description:
+        'Fallback declaration for checking whether an ERP product with the same Chinese product name already exists. Call after package required-field validation passes and before upload/create.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          productNameCn: {
+            type: 'string',
+            description: 'Chinese product name from the package draft.'
+          }
+        },
+        required: ['productNameCn'],
         additionalProperties: true
       }
     },

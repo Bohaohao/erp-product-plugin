@@ -9,7 +9,7 @@ description: ERP product creation workflow through Product MCP. Use when the use
 
 Use the `erp-product` MCP tools to turn local ERP product materials into a checked, uploaded, created, and verified product. The local bridge reads the user's Chrome ERP login token; never ask the user to paste or reveal the token.
 
-Use the local bridge as the entry point for Codex/local package workflows. Local files must be uploaded with `product_upload_file` first; do not send local paths, file bytes, or large base64 payloads to any MCP request or to `product_create`. Product MCP bridge `0.1.10` and later uses the local bridge to call the ERP backend directly for reference lookups, detail checks, uploads, and product creation; the remote MCP server is not part of the Codex default path. It also selects the Chrome DevTools MCP startup command by OS and appends common macOS Node version-manager paths for child processes, so macOS must not use Windows `cmd /c` Chrome MCP settings.
+Use the local bridge as the entry point for Codex/local package workflows. Local files must be uploaded with `product_upload_file` only after package required-field validation and duplicate-name check pass; do not send local paths, file bytes, or large base64 payloads to any MCP request or to `product_create`. Product MCP bridge `0.1.10` and later uses the local bridge to call the ERP backend directly for reference lookups, detail checks, uploads, and product creation; the remote MCP server is not part of the Codex default path. It also selects the Chrome DevTools MCP startup command by OS and appends common macOS Node version-manager paths for child processes, so macOS must not use Windows `cmd /c` Chrome MCP settings.
 
 Use only the published `product_*` MCP tools for Chrome login checks, token reads, Chrome DevTools page matching, Product MCP SDK access, backend lookups, uploads, creation, and verification. Do not write temporary scripts to connect to Chrome DevTools MCP, parse Chrome page lists, read ERP tokens, import Product MCP internal modules, or call internal backend helpers. Those scripts bypass the runtime launcher, token cache, page-list parser, SDK resolution, auth refresh, config sync, and standard error handling, and can reintroduce bugs already fixed in Product MCP.
 
@@ -32,6 +32,8 @@ Product MCP bridge `0.1.12` and later attaches redacted `details.chromePages` di
 ERP Product plugin `0.3.16` and later has the Runtime Proxy start or reuse the Product MCP local Token Bridge Daemon when `<productMcpDir>/dist/tokenBridgeDaemon.js` exists. The proxy injects `PRODUCT_TOKEN_DAEMON_URL` and `PRODUCT_TOKEN_DAEMON_SECRET` into the Product MCP child runtime, keeps the daemon alive across Product MCP child hot-restarts, and closes it only when the Runtime Proxy exits. If daemon startup fails or the entry is missing, the proxy falls back to the legacy `localBridge.js` token path and exposes the reason in `product_runtime_self_check` / `product_runtime_status` under `tokenDaemon`; report that diagnostic instead of saying all `product_*` tools disappeared.
 
 ERP Product plugin `0.3.17` and later predeclares known Product MCP business tools from the Launcher and Runtime Proxy. If runtime status shows `cachedToolCount: 0` but `product_precheck_package`, `product_upload_file`, `product_create`, and lookup tools are visible in the current Codex tool list, do not stop or ask the user to restart. Continue through the standard tools; the fallback declarations only keep tool names visible, while the Product MCP child runtime still executes and validates the real calls. Ask for reconnect/restart only when the required tool names are genuinely absent from the current Codex tool list after `product_runtime_self_check`.
+
+Product MCP bridge `0.1.15` and ERP Product plugin `0.3.18` and later expose `product_check_name_duplicate`. Treat it as a mandatory create gate: after `product_precheck_package` required-field validation passes and before any file upload or create call, check `draft.productNameCn` / the package Chinese product name. If the tool returns `exists: true` or `blocking: true`, stop this product's workflow and report the duplicate instead of uploading files.
 
 ## First Step
 
@@ -80,14 +82,16 @@ When the user provides a local product package directory or product markdown fil
 
 1. Call `product_precheck_package` with the local path and `includeDraft: true`.
 2. Report blocking errors, warnings, generated image crops, and the upload queue.
-3. Resolve unresolved names by calling read-only tools:
+3. If required-field validation passed and the draft contains a Chinese product name, call `product_check_name_duplicate` with that name before any upload. If `exists: true` or `blocking: true`, stop this product immediately; do not call `product_upload_file` or `product_create`.
+4. If this is a multi-agent batch and the current worker found a duplicate, return a failure notification to the controller/orchestrator. Include the package path, `productNameCn`, `duplicates`, and a clear note that no upload/create was performed.
+5. Resolve unresolved names by calling read-only tools:
    - `product_list_categories` for category names and IDs.
    - `product_get_category_config` for unit IDs, base configs, technical params, and optional configs.
    - `product_list_suppliers` for supplier IDs and names.
    - `product_list_regions` when the draft does not use all regions.
    - `product_get_dict` when dictionary values are needed.
-4. Upload each valid local file with `product_upload_file`. Preserve `dedupeKey`, `sourceRelativePath`, and `sourceLocalPath` from each `uploadQueue` item so repeated package files can reuse the first OSS URL. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
-5. Build the `product_create` input from the precheck draft, resolved backend IDs, uploaded URLs, and any user corrections.
+6. Upload each valid local file with `product_upload_file`. Preserve `dedupeKey`, `sourceRelativePath`, and `sourceLocalPath` from each `uploadQueue` item so repeated package files can reuse the first OSS URL. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
+7. Build the `product_create` input from the precheck draft, resolved backend IDs, uploaded URLs, and any user corrections.
 
 Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
 
@@ -113,6 +117,7 @@ Use these tools directly for smaller requests:
 - Runtime refresh: `product_runtime_refresh`.
 - Local file upload: `product_upload_file`.
 - Package validation only: `product_precheck_package`.
+- Duplicate product-name check: `product_check_name_duplicate`.
 - Reference lookup: `product_list_categories`, `product_get_category_config`, `product_list_suppliers`, `product_list_regions`, `product_get_dict`.
 - Acceptance check: `product_get_detail`.
 

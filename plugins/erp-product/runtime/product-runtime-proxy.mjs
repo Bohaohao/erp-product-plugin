@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.5';
+const proxyVersion = '0.3.6';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -1601,6 +1601,23 @@ function productFallbackTools() {
       inputSchema: {
         type: 'object',
         properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_check_name_duplicate',
+      title: 'Check duplicate product name',
+      description:
+        'Fallback declaration for checking whether an ERP product with the same Chinese product name already exists. Call after package required-field validation passes and before upload/create.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          productNameCn: {
+            type: 'string',
+            description: 'Chinese product name from the package draft.'
+          }
+        },
+        required: ['productNameCn'],
         additionalProperties: true
       }
     },
