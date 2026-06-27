@@ -71,34 +71,45 @@ Do not ask the user for internal IDs unless they already have them. Ask for name
 
 ## 5. Required Field Filling
 
-Use the minimum create-ready contract:
+Use the minimum create-ready contract (DTO `CommoditySaveDTO` is the source of truth for hard-blocking required fields):
 
 | Field | How user should think about it | How Codex should handle it |
 |---|---|---|
 | 商品中文名称 | 商品在 ERP 中展示的中文名称 | Must be present before duplicate check |
-| 商品英文名称 | 面向英文场景展示的名称 | Optional; fill when English display is needed |
 | 产品类型 | 整机 / 配件 / 服务 | Map to Product MCP productType later |
 | 上架状态 | 上架 / 下架 / 作废 | Required by precheck; use 作废 only on explicit request |
-| 一级分类 | 商品所属分类路径或名称 | Resolve with `product_list_categories` |
 | 计量单位 | 台、件、套等销售/库存单位 | Resolve from `product_get_category_config` |
 | 供应商 | 商品对应供应商名称 | Resolve with `product_list_suppliers` |
-| 适用范围 | 全球 / 指定区域 | If 指定区域, require region rows |
-| 包装长 mm | 外包装长度，单位 mm | Required numeric value |
-| 包装宽 mm | 外包装宽度，单位 mm | Required numeric value |
-| 包装高 mm | 外包装高度，单位 mm | Required numeric value |
-| 包装方数 | 包装体积/方数 | Required numeric value |
-| 包装费 | 包装费用 | Required numeric value |
-| 包装重量 kg | 含包装重量，单位 kg | Required numeric value |
-| 净重 kg | 商品净重，单位 kg | Required numeric value |
-| 商品主图 | 本地相对路径，建议 1:1 图片 | Must exist; Product MCP validates/crops |
+| 是否支持拼柜 | 是否支持拼柜发货 | 是 / 否；DTO 非可选字段 |
+| 是否可做展品 | 是否可作为展品 | 是 / 否；DTO 非可选字段 |
+| 是否需要安装 | 是否需要现场安装 | 是 / 否；DTO 非可选字段 |
+| 是否有售后门槛 | 是否设置售后门槛 | 是 / 否；DTO 非可选字段 |
+| 是否支持样品 | 是否提供样品 | 是 / 否；DTO 非可选字段 |
+| 是否支持配件单买 | 配件是否可单独购买 | 是 / 否；DTO 非可选字段 |
+| 是否支持 OEM | 是否支持 OEM | 是 / 否；DTO 非可选字段 |
+| 是否支持 ODM | 是否支持 ODM | 是 / 否；DTO 非可选字段 |
+| 是否支持小批量试单 | 是否接受小批量试单 | 是 / 否；DTO 非可选字段 |
+| 是否现货备货 | 是否现货备货 | 是 / 否；DTO 非可选字段 |
+| 是否海外仓备货 | 是否海外仓备货 | 是 / 否；DTO 非可选字段 |
+
+Not hard-blocking (fill when known, do not block creation):
+
+- `商品英文名称`: optional; fill when English display is needed.
+- `一级分类` / category path: optional; fill when useful for product organization.
+- `适用范围` / `适用区域`: optional; if the user wants 指定区域, collect region rows.
+- `商品主图`: recommended; Product MCP validates/crops it when present.
+- `Banner 图`: optional.
+- `产品等级`, `参考成本价 人民币`, `利润率 %`: optional / recommended.
+- Packaging/logistics (`包装长 mm`, `包装宽 mm`, `包装高 mm`, `包装方数`, `包装费`, `包装重量 kg`, `净重 kg`): legacy business-check items, recommended but not hard-blocking.
 
 Ask for missing values in groups:
 
-1. Basic identity: Chinese name, optional English name, product type.
-2. Business references: category path, unit, supplier.
-3. Sales scope: global or specified regions.
-4. Packaging/logistics: package dimensions, volume, packaging cost, gross weight, net weight.
-5. Required media: main image relative path.
+1. Basic identity: Chinese name, product type. (English name is optional.)
+2. Business references: unit, supplier. Category path is recommended but not blocking.
+3. Sales scope: optional global or specified regions.
+4. Sales/delivery/after-sales support flags: 是否支持拼柜, 是否可做展品, 是否需要安装, 是否有售后门槛, 是否支持样品, 是否支持配件单买, 是否支持 OEM, 是否支持 ODM, 是否支持小批量试单, 是否现货备货, 是否海外仓备货.
+5. Recommended (non-blocking) media: main image and Banner relative paths.
+6. Recommended (non-blocking) extras when the user has them: packaging/logistics dimensions and weights, 产品等级, 参考成本价 人民币, 利润率 %, Banner 图.
 
 Example question style:
 
@@ -107,27 +118,27 @@ Example question style:
 
 | 字段 | 当前情况 | 请确认 |
 |---|---|---|
-| 一级分类 | 可能是“工程机械 > 挖掘机” | 是否使用这个分类？ |
-| 适用范围 | 未找到 | 全球，还是指定区域？ |
+| 计量单位 | 未找到 | 商品计量单位是什么？ |
+| 供应商 | 未找到 | 使用哪个供应商？ |
 ```
 
-When these blocking fields require user input, immediately after the compact table add a copyable reply block: one field per line in the exact style `字段名：_______` when no candidate exists. Include only the fields that are currently blocking or uncertain (not every field by default), use field names that match `商品资料.md`, and replace blanks with safe/inferred candidates when useful without ever writing `待确认` inside the value. Put enum hints after the blank/value, and when `适用范围=指定区域` always include `适用区域：_______`. On the next turn, parse the user's filled `字段名：值` lines, update `商品资料.md`, and rerun the local check.
+When these blocking fields require user input, immediately after the compact table add a copyable reply block: one field per line in the exact style `字段名：_______` when no candidate exists. Include only the fields that are currently blocking or uncertain (not every field by default), use field names that match `商品资料.md`, and replace blanks with safe/inferred candidates when useful without ever writing `待确认` inside the value. Put enum hints after the blank/value; if the user chooses to fill `适用范围=指定区域`, include `适用区域：_______`. On the next turn, parse the user's filled `字段名：值` lines, update `商品资料.md`, and rerun the local check.
 
 ```text
 产品类型：_______（整机/配件/服务）
 上架状态：上架（上架/下架/作废）
-一级分类：工程机械 > 挖掘机
 供应商：_______
-适用范围：指定区域（全球/指定区域）
-适用区域：_______
-包装长 mm：_______
-包装宽 mm：_______
-包装高 mm：_______
-包装方数：_______
-包装费：_______
-包装重量 kg：_______
-净重 kg：_______
-商品主图：./图片/主图.jpg
+是否支持拼柜：_______（是/否）
+是否可做展品：_______（是/否）
+是否需要安装：_______（是/否）
+是否有售后门槛：_______（是/否）
+是否支持样品：_______（是/否）
+是否支持配件单买：_______（是/否）
+是否支持 OEM：_______（是/否）
+是否支持 ODM：_______（是/否）
+是否支持小批量试单：_______（是/否）
+是否现货备货：_______（是/否）
+是否海外仓备货：_______（是/否）
 ```
 
 ## 6. File Reference Confirmation
@@ -224,8 +235,6 @@ For maintenance/precheck reports, use this shape:
 
 请直接补全并粘贴回来（只列当前阻塞/不确定的字段）：
 产品类型：_______（整机/配件/服务）
-适用范围：_______（全球/指定区域）
-适用区域：_______
 
 文件路径：
 - 无问题 / 有 N 个问题

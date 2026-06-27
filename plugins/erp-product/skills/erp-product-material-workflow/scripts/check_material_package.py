@@ -29,17 +29,19 @@ REQUIRED_FIELD_ROWS = [
     "商品中文名称",
     "产品类型",
     "上架状态",
-    "一级分类",
     "计量单位",
     "供应商",
-    "适用范围",
-    "包装长 mm",
-    "包装宽 mm",
-    "包装高 mm",
-    "包装方数",
-    "包装费",
-    "包装重量 kg",
-    "净重 kg",
+    "是否支持拼柜",
+    "是否可做展品",
+    "是否需要安装",
+    "是否有售后门槛",
+    "是否支持样品",
+    "是否支持配件单买",
+    "是否支持 OEM",
+    "是否支持 ODM",
+    "是否支持小批量试单",
+    "是否现货备货",
+    "是否海外仓备货",
 ]
 
 PATH_HEADERS_STRICT = {"文件路径", "主图路径", "图片路径", "附件路径"}
@@ -405,18 +407,6 @@ def main() -> int:
     template_ok, template_version, template_issues = check_template_structure(text, lines, tables, schema)
 
     missing = [field for field in REQUIRED_FIELD_ROWS if not values.get(field)]
-
-    main_image_present = False
-    for _, header, rows in tables:
-        if "图片用途" not in header or "文件路径" not in header:
-            continue
-        usage_idx = header.index("图片用途")
-        path_idx = header.index("文件路径")
-        for row in rows:
-            if usage_idx < len(row) and path_idx < len(row) and row[usage_idx] == "商品主图" and row[path_idx].strip():
-                main_image_present = True
-    if not main_image_present:
-        missing.append("商品主图文件路径")
 
     path_issues, path_warnings, checked_paths = check_paths(md_path, lines)
     result = {
