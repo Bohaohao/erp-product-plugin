@@ -1,0 +1,4 @@
+interface:
+  display_name: "ERP 商品资料维护"
+  short_description: "引导填写并检查本地商品资料包"
+  default_prompt: "Use $erp-product-material-workflow to turn a local product-material directory into a create-ready 商品资料.md package."
