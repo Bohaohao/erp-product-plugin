@@ -1,6 +1,6 @@
 {
   "name": "erp-product",
-  "version": "0.3.20",
+  "version": "0.3.20+codex.20260627134309",
   "description": "Create ERP products from Codex using the user's Chrome ERP login.",
   "author": {
     "name": "ERP Product Team"
@@ -12,11 +12,17 @@
     "longDescription": "ERP Product lets Codex use a stable runtime launcher to update and start the plugin runtime proxy, manage Product MCP, read the current Chrome ERP login through a token bridge, precheck local product packages, upload product files to OSS, query ERP references, create ERP products, and verify created product details through the local bridge/ERP backend path.",
     "developerName": "ERP Product Team",
     "category": "Productivity",
-    "capabilities": ["MCP", "Local files", "ERP workflow"],
+    "capabilities": [
+      "MCP",
+      "Local files",
+      "ERP workflow"
+    ],
     "defaultPrompt": [
       "Check ERP Product MCP login status.",
       "Precheck this ERP product package.",
-      "Create this ERP product after I confirm."
+      "Create this ERP product after I confirm.",
+      "\u5e2e\u6211\u628a\u67d0\u76ee\u5f55\u4e0b\u7684\u8d44\u6599\u6574\u7406\u4e00\u4e0b\uff0c\u7136\u540e\u521b\u5efa\u6210\u5546\u54c1",
+      "\u628a\u8fd9\u4efd\u8d44\u6599\u6574\u7406\u6210\u53ef\u521b\u5efa\u7684\u5546\u54c1\u8d44\u6599\u5305"
     ]
   },
   "mcpServers": "./.mcp.json"

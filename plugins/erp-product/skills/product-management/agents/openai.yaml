@@ -1,4 +1,4 @@
 interface:
   display_name: "ERP Product Management"
-  short_description: "Create ERP products from Codex"
-  default_prompt: "Precheck an ERP product package and create the product."
+  short_description: "Organize local materials into a product package and create ERP products"
+  default_prompt: "帮我把某目录下的资料整理一下，然后创建成商品"
