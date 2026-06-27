@@ -29,8 +29,10 @@ REQUIRED_FIELD_ROWS = [
     "商品中文名称",
     "产品类型",
     "上架状态",
+    "一级分类",
     "计量单位",
     "供应商",
+    "适用范围",
     "是否支持拼柜",
     "是否可做展品",
     "是否需要安装",
@@ -43,6 +45,7 @@ REQUIRED_FIELD_ROWS = [
     "是否现货备货",
     "是否海外仓备货",
 ]
+PRODUCT_MODEL_RE = re.compile(r"^[A-Za-z0-9 ]+$")
 
 PATH_HEADERS_STRICT = {"文件路径", "主图路径", "图片路径", "附件路径"}
 PATH_HEADERS_LOOSE = {"文件路径或内容"}
@@ -127,6 +130,29 @@ def row_value_map(tables: Iterable[Tuple[int, List[str], List[List[str]]]]) -> D
             if len(row) >= 2 and row[0]:
                 values[row[0]] = row[1].strip()
     return values
+
+
+def dict_rows_by_first_header(
+    tables: Iterable[Tuple[int, List[str], List[List[str]]]], first_header: str
+) -> List[Dict[str, str]]:
+    dict_rows: List[Dict[str, str]] = []
+    for _, header, rows in tables:
+        if not header or header[0] != first_header:
+            continue
+        for row in rows:
+            item: Dict[str, str] = {}
+            for index, column in enumerate(header):
+                item[column] = row[index].strip() if index < len(row) else ""
+            dict_rows.append(item)
+    return dict_rows
+
+
+def has_any_row_value(rows: List[Dict[str, str]], ignored_columns: set[str] | None = None) -> bool:
+    ignored = ignored_columns or set()
+    for row in rows:
+        if any(value for column, value in row.items() if column not in ignored):
+            return True
+    return False
 
 
 def keyed_row_map(tables: Iterable[Tuple[int, List[str], List[List[str]]]]) -> Dict[str, Dict[str, str]]:
@@ -386,6 +412,79 @@ def path_issue(line: int, row: str, column: str, value: str, code: str, message:
     }
 
 
+def missing_issue(field: str, message: str) -> dict:
+    return issue("CONDITIONAL_REQUIRED_MISSING", message, field=field)
+
+
+def check_business_rules(values: Dict[str, str], tables: List[Tuple[int, List[str], List[List[str]]]]) -> Tuple[List[str], List[dict]]:
+    missing: List[str] = []
+    issues: List[dict] = []
+
+    product_model = values.get("产品型号", "")
+    if product_model and (not PRODUCT_MODEL_RE.fullmatch(product_model) or product_model != product_model.strip()):
+        issues.append(
+            issue(
+                "PRODUCT_MODEL_FORMAT_INVALID",
+                "产品型号仅允许英文大小写、数字和空格，且不能有首尾空格、中文或符号。",
+                field="产品型号",
+            )
+        )
+
+    image_rows = dict_rows_by_first_header(tables, "图片用途")
+    main_image = next((row for row in image_rows if row.get("图片用途") == "商品主图"), None)
+    if not main_image or not main_image.get("文件路径"):
+        missing.append("商品主图")
+        issues.append(missing_issue("商品主图", "创建商品前必须填写商品主图相对路径。"))
+
+    if values.get("适用范围") == "指定区域":
+        region_rows = dict_rows_by_first_header(tables, "区域名称")
+        if not any(row.get("区域名称") or row.get("区域ID") for row in region_rows):
+            missing.append("适用区域")
+            issues.append(missing_issue("适用区域", "适用范围为指定区域时，必须填写至少一行区域明细。"))
+
+    product_type = values.get("产品类型")
+    if product_type == "整机":
+        for field in ["产品等级", "参考成本价 人民币", "利润率 %"]:
+            if not values.get(field):
+                missing.append(field)
+                issues.append(missing_issue(field, f"产品类型为整机时，{field}必填。"))
+
+        base_rows = dict_rows_by_first_header(tables, "配置项名称")
+        if not has_any_row_value(base_rows, {"备注"}):
+            missing.append("基础配置")
+            issues.append(missing_issue("基础配置", "产品类型为整机时，必须填写至少一行基础配置。"))
+        for index, row in enumerate(base_rows, start=1):
+            if row.get("配置项名称") and not row.get("配置值"):
+                issues.append(
+                    issue(
+                        "BASE_CONFIG_VALUE_REQUIRED",
+                        f"基础配置第 {index} 行已填写配置项名称，必须补全配置值。",
+                        field="配置值",
+                        row=index,
+                    )
+                )
+
+        tech_rows = dict_rows_by_first_header(tables, "参数名称")
+        for index, row in enumerate(tech_rows, start=1):
+            if row.get("参数名称") and not row.get("参数值"):
+                issues.append(
+                    issue(
+                        "TECHNICAL_PARAM_VALUE_REQUIRED",
+                        f"技术参数第 {index} 行已填写参数名称，必须补全参数值。",
+                        field="参数值",
+                        row=index,
+                    )
+                )
+
+    if product_type in {"整机", "配件"}:
+        for field in ["包装长 mm", "包装宽 mm", "包装高 mm", "包装费", "包装重量 kg", "净重 kg"]:
+            if not values.get(field):
+                missing.append(field)
+                issues.append(missing_issue(field, f"产品类型为{product_type}时，{field}必填。"))
+
+    return missing, issues
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Check 商品资料.md required fields and local file references.")
     parser.add_argument("path", help="Package directory or 商品资料.md path")
@@ -407,11 +506,15 @@ def main() -> int:
     template_ok, template_version, template_issues = check_template_structure(text, lines, tables, schema)
 
     missing = [field for field in REQUIRED_FIELD_ROWS if not values.get(field)]
+    conditional_missing, business_issues = check_business_rules(values, tables)
+    for field in conditional_missing:
+        if field not in missing:
+            missing.append(field)
 
     path_issues, path_warnings, checked_paths = check_paths(md_path, lines)
     result = {
-        "ok": template_ok and not missing and not path_issues,
-        "blocking": bool(template_issues or missing or path_issues),
+        "ok": template_ok and not missing and not business_issues and not path_issues,
+        "blocking": bool(template_issues or missing or business_issues or path_issues),
         "markdownPath": str(md_path),
         "packageDir": str(md_path.parent),
         "template_ok": template_ok,
@@ -420,6 +523,7 @@ def main() -> int:
         "normalized": normalized,
         "backupPath": backup_path,
         "missing_required": missing,
+        "business_issues": business_issues,
         "checked_path_count": checked_paths,
         "path_issues": path_issues,
         "path_warnings": path_warnings,
@@ -443,6 +547,11 @@ def main() -> int:
             print("\n缺少必填项：")
             for field in missing:
                 print(f"- {field}")
+        if business_issues:
+            print("\n业务规则问题：")
+            for business_issue in business_issues:
+                detail = business_issue.get("field") or ""
+                print(f"- {business_issue['message']} {detail}".rstrip())
         if path_issues:
             print("\n文件路径问题：")
             for issue in path_issues:

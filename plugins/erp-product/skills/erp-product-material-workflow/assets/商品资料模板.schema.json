@@ -1,5 +1,5 @@
 {
-  "templateVersion": "2026-06-27.1",
+  "templateVersion": "2026-06-27.2",
   "templateFile": "商品资料空白模板.md",
   "requiredSections": [
     "# 商品资料",
@@ -10,6 +10,7 @@
     "## 4. 销售、交付、售后",
     "## 5. 价格信息",
     "## 6. 包装与物流",
+    "## 8. 基础配置",
     "## 11. 商品图片",
     "## 12. 商品视频、3D 与附件",
     "## 20. 提交前确认"
@@ -24,8 +25,10 @@
     "商品中文名称",
     "产品类型",
     "上架状态",
+    "一级分类",
     "计量单位",
     "供应商",
+    "适用范围",
     "是否支持拼柜",
     "是否可做展品",
     "是否需要安装",
@@ -38,5 +41,55 @@
     "是否现货备货",
     "是否海外仓备货"
   ],
-  "requiredImageRows": []
+  "requiredImageRows": [
+    "商品主图"
+  ],
+  "productModel": {
+    "field": "产品型号",
+    "pattern": "^[A-Za-z0-9 ]+$",
+    "noEdgeSpace": true,
+    "description": "产品型号为可选字段；一旦填写，仅允许英文大小写字母、数字与空格，不能有首尾空格、中文或其他符号。"
+  },
+  "conditionalRequirements": [
+    {
+      "name": "整机等级成本利润",
+      "fields": ["产品等级", "参考成本价 人民币", "利润率 %"],
+      "requiredWhenProductType": ["整机"],
+      "enumHint": "产品类型为整机时必填",
+      "message": "产品类型为整机时，必须填写产品等级、参考成本价 人民币、利润率 %。"
+    },
+    {
+      "name": "整机配置",
+      "requireNonEmptyRow": true,
+      "tableFirstHeader": "配置项名称",
+      "requiredWhenProductType": ["整机"],
+      "field": "整机配置",
+      "enumHint": "整机基础配置，至少一行",
+      "message": "产品类型为整机时，必须在“8. 基础配置”填写至少一行整机配置。"
+    },
+    {
+      "name": "整机/配件包装字段",
+      "fields": ["包装长 mm", "包装宽 mm", "包装高 mm", "包装费", "包装重量 kg", "净重 kg"],
+      "requiredWhenProductType": ["整机", "配件"],
+      "enumHint": "数字",
+      "message": "产品类型为整机或配件时，必须填写包装长/宽/高 mm、包装费、包装重量 kg、净重 kg。"
+    },
+    {
+      "name": "适用区域明细",
+      "requireNonEmptyRow": true,
+      "tableFirstHeader": "区域名称",
+      "requiredWhenField": {"适用范围": "指定区域"},
+      "field": "适用区域",
+      "enumHint": "区域名称，至少一行",
+      "message": "适用范围为指定区域时，必须在“3. 适用区域”填写至少一行区域明细。"
+    },
+    {
+      "name": "商品主图",
+      "imageRow": "商品主图",
+      "imageColumn": "文件路径",
+      "field": "商品主图",
+      "enumHint": "相对路径，如 ./图片/主图.jpg",
+      "message": "创建商品时，必须提供商品主图相对路径。"
+    }
+  ]
 }

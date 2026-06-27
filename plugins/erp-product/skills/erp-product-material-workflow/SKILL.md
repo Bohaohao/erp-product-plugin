@@ -126,13 +126,16 @@ Not allowed without confirmation:
 
 ## Required Fields
 
-For a create-ready package, confirm these minimum fields (DTO `CommoditySaveDTO` is the source of truth for hard-blocking required fields):
+For a create-ready package, hard-blocking fields are the union of DTO `CommoditySaveDTO` non-optional fields and the frontend save-before-submit blockers:
 
 - `商品中文名称`
 - `产品类型`: `整机`, `配件`, or `服务`
 - `上架状态`: `上架`, `下架`, or `作废`
+- `一级分类`
 - `计量单位`
 - `供应商`
+- `适用范围`: `全球` or `指定区域`; when `指定区域`, collect at least one `适用区域` row.
+- `商品主图`: relative path required before create.
 - `是否支持拼柜`: `是` or `否`
 - `是否可做展品`: `是` or `否`
 - `是否需要安装`: `是` or `否`
@@ -145,7 +148,15 @@ For a create-ready package, confirm these minimum fields (DTO `CommoditySaveDTO`
 - `是否现货备货`: `是` or `否`
 - `是否海外仓备货`: `是` or `否`
 
-Not hard-blocking (fill when known, do not block creation): `商品英文名称` (optional), `一级分类` / category path (optional), `适用范围` / `适用区域` (optional), `商品主图` (recommended), `Banner 图` (optional), `产品等级` (optional), `参考成本价 人民币` (optional), `利润率 %` (optional). Packaging/logistics fields (`包装长 mm`, `包装宽 mm`, `包装高 mm`, `包装方数`, `包装费`, `包装重量 kg`, `净重 kg`) are legacy business-check items: recommended but not hard-blocking.
+Conditional hard blockers:
+
+- If `产品类型=整机`: `产品等级`, `参考成本价 人民币`, `利润率 %`, and at least one `基础配置` row are required. Any filled `基础配置` / `技术参数` row must include its value.
+- If `产品类型=整机` or `产品类型=配件`: `包装长 mm`, `包装宽 mm`, `包装高 mm`, `包装费`, `包装重量 kg`, `净重 kg` are required.
+- If independent SKU package data exists, every SKU row must include length, width, height, gross weight, net weight, and package fee; package volume is calculated and should not be requested as a hand-filled blocker.
+
+Not hard-blocking (fill when known, do not block creation): `商品英文名称` (optional), `Banner 图` (optional), and `包装方数` (optional/calculated).
+
+Product model rule: `产品型号` is optional, but once filled it must contain only English letters, digits, and spaces, with no leading/trailing spaces, Chinese, punctuation, or special symbols. Treat `spuModel` as a compatibility alias for `产品型号` / `productModel`.
 
 When fields are missing, first check whether the value is already present elsewhere in the package. Then summarize missing and uncertain values in a compact table:
 
@@ -159,7 +170,7 @@ When blocking missing/uncertain fields require user input, immediately after the
 Rules:
 
 - Include only the fields that are currently blocking or uncertain, not every possible field by default.
-- Use field names that match `商品资料.md` (商品中文名称, 产品类型, 上架状态, 计量单位, 供应商, 是否支持拼柜, 是否可做展品, 是否需要安装, 是否有售后门槛, 是否支持样品, 是否支持配件单买, 是否支持 OEM, 是否支持 ODM, 是否支持小批量试单, 是否现货备货, 是否海外仓备货). Do not include optional fields such as 商品英文名称, 一级分类, 适用范围, 适用区域, 商品主图, Banner 图, 产品等级, 参考成本价 人民币, or 利润率 % unless the user explicitly asks about them or they are materially useful to confirm; packaging fields are recommended but not blocking, so only include them when the user wants to confirm packaging values.
+- Use field names that match `商品资料.md` exactly. Include only current blockers, which may include 商品中文名称, 产品类型, 上架状态, 一级分类, 计量单位, 供应商, 适用范围, 适用区域, 商品主图, 产品等级, 参考成本价 人民币, 利润率 %, 包装长 mm, 包装宽 mm, 包装高 mm, 包装费, 包装重量 kg, 净重 kg, and the required support flags. Do not include optional fields such as 商品英文名称, Banner 图, or 包装方数 unless the user explicitly asks.
 - If a safe/inferred candidate is useful, replace the blank with that value (for example `一级分类：工程机械 > 挖掘机`), but never put `待确认` inside the value itself.
 - Put enum hints after the blank/value, e.g. `产品类型：_______（整机/配件/服务）`, `上架状态：_______（上架/下架/作废）`, `是否支持样品：_______（是/否）`.
 - If the user chooses to fill `适用范围=指定区域`, include `适用区域：_______` so the next turn can parse regions.
@@ -176,11 +187,11 @@ Minimal example:
 Ask in this order:
 
 1. Basic identity: Chinese name, product type. (English name is optional.)
-2. Business references: unit and supplier. Category path is recommended but not blocking.
-3. Optional sales scope: global or specified regions.
+2. Business references: category path, unit, and supplier.
+3. Sales scope: global or specified regions.
 4. Sales/delivery/after-sales support flags: 是否支持拼柜, 是否可做展品, 是否需要安装, 是否有售后门槛, 是否支持样品, 是否支持配件单买, 是否支持 OEM, 是否支持 ODM, 是否支持小批量试单, 是否现货备货, 是否海外仓备货.
-5. Recommended media: main image relative path.
-6. Recommended (non-blocking) extras when the user has them: packaging/logistics dimensions and weights, 产品等级, 参考成本价 人民币, 利润率 %, Banner 图.
+5. Media and conditionals: main image relative path, packaging fields for 整机/配件, and 产品等级/参考成本价/利润率 fields for 整机 when they apply.
+6. Optional extras when the user has them: 商品英文名称, Banner 图, 包装方数, additional rich media.
 
 ## File Path Rules
 
