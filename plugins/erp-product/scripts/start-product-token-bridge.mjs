@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.20';
+const launcherVersion = '0.3.21';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';

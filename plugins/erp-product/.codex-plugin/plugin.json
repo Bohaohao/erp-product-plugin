@@ -1,6 +1,6 @@
 {
   "name": "erp-product",
-  "version": "0.3.20+codex.20260627134309",
+  "version": "0.3.21",
   "description": "Create ERP products from Codex using the user's Chrome ERP login.",
   "author": {
     "name": "ERP Product Team"
