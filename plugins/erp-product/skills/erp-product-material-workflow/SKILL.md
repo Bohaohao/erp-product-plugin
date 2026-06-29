@@ -114,7 +114,8 @@ Metadata-only intake during organization must never silently reduce the upload s
   2. Update, or ask the user to update, `商品资料.md` so the excluded files are no longer in the creation package (remove their references from the fields being created now).
   3. Rerun the local check and Product MCP precheck on the reduced `商品资料.md`.
   4. Upload every item in the new `uploadQueue`; nothing in the new queue may be skipped.
-- If any referenced valid `uploadQueue` item fails to upload, stop and report the failing file and remediation options: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck. Do not continue to `product_create` with a partial upload set.
+- In the high-level `product_create_from_package` workflow, a single upload failure is retried once and the workflow continues uploading the remaining valid items. After upload finishes, any item that still failed is reported with an error marker, and creation must remain blocked.
+- In an atomic workflow, if any referenced valid `uploadQueue` item fails to upload after retry, stop before `product_create` and report the failing file and remediation options: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck. Do not continue to `product_create` with a partial upload set.
 
 ## Protect Business Truth
 
@@ -284,13 +285,13 @@ Do not create products as part of ordinary material maintenance. When the user a
 
 1. Ensure template validation passed; run `--normalize-template` first if the structure is nonstandard.
 2. Ensure runtime/auth are ready.
-3. Ensure `product_precheck_package` required validation passed.
-4. Ensure `product_check_name_duplicate` did not block.
-5. If `product_upload_file`, `product_create`, or required lookup tools are not callable, stop and report Product MCP tool unavailability; do not use browser/front-end fallbacks.
-6. Upload files with `product_upload_file`, preserving `dedupeKey`, `sourceRelativePath`, and `sourceLocalPath`. Upload every item in the precheck `uploadQueue`; never self-narrow the set to core/main materials (see *Upload Scope Discipline*). If any valid queue item fails to upload, stop and report it; do not proceed to `product_create`.
-7. Summarize product name, category, unit, supplier, region scope, main image status, warnings, and upload counts.
-8. Call `product_create` only after explicit user confirmation and with `confirm: true`.
-9. Verify with `product_get_detail`.
+3. Prefer `product_create_from_package` for the create handoff. First call it with `runMode: "preview"` and `responseMode: "summary"`; this must not upload or create.
+4. Report preview blockers, duplicate-name results, reference-resolution results, upload queue count, field coverage, and create preview summary.
+5. If `product_create_from_package` is not callable, stop and report Product MCP tool unavailability unless the user explicitly requested an atomic diagnostic flow. Do not use browser/front-end fallbacks.
+6. After explicit user confirmation, call `product_create_from_package` with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when available.
+7. The high-level workflow uploads every valid precheck `uploadQueue` item, retries one failed upload once, continues remaining uploads, blocks creation if any valid item still failed, and verifies with `product_get_detail` after creation.
+8. Use `product_precheck_package`, `product_check_name_duplicate`, `product_upload_file`, `product_create`, and lookup tools directly only for an explicitly requested step-by-step or diagnostic workflow. In that atomic path, upload every item in the precheck `uploadQueue`; never self-narrow the set to core/main materials (see *Upload Scope Discipline*). If any valid queue item fails after retry, do not proceed to `product_create`.
+9. Summarize product name, category, unit, supplier, region scope, main image status, warnings, upload counts, product ID, and detail/diff results.
 
 ## Deeper Guide
 

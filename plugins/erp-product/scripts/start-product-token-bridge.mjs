@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const bundledPluginRoot = dirname(scriptDir);
-const launcherVersion = '0.3.21';
+const launcherVersion = '0.3.22';
 const pluginRuntimeRepoUrl = 'https://github.com/Bohaohao/erp-product-plugin.git';
 const pluginRuntimeRef = 'master';
 const productMcpRepoUrl = 'https://github.com/Bohaohao/product-mcp.git';
@@ -26,6 +26,7 @@ const runtimeToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TO
 const runtimeToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_AUTH_TIMEOUT_MS', 240_000);
 const runtimeToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_CREATE_TIMEOUT_MS', 180_000);
 const runtimeToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
+const runtimeToolWorkflowTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_RUNTIME_TOOL_WORKFLOW_TIMEOUT_MS', 900_000);
 const selfCheckReuseTtlMs = positiveIntegerFromEnv('ERP_PRODUCT_SELF_CHECK_REUSE_TTL_MS', 120_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
@@ -1165,6 +1166,17 @@ function fallbackRuntimeTools() {
       }
     },
     {
+      name: 'product_create_from_package',
+      title: 'Create product from package',
+      description:
+        'Fallback declaration for the high-level Product MCP package workflow. The real Product MCP runtime validates the input and runs precheck, duplicate gate, reference resolution, upload binding, create, and detail verification.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
       name: 'product_upload_file',
       title: 'Upload product file',
       description:
@@ -1308,6 +1320,7 @@ function runtimeToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return runtimeToolUploadTimeoutMs;
   if (name === 'product_create') return runtimeToolCreateTimeoutMs;
+  if (name === 'product_create_from_package') return runtimeToolWorkflowTimeoutMs;
   if (
     name === 'product_runtime_status' ||
     name === 'product_runtime_launcher_status' ||

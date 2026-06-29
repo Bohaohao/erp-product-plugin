@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.23';
+const proxyVersion = '0.3.24';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -26,6 +26,7 @@ const childToolQueryTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_Q
 const childToolAuthTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_AUTH_TIMEOUT_MS', 240_000);
 const childToolCreateTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_CREATE_TIMEOUT_MS', 180_000);
 const childToolUploadTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_UPLOAD_TIMEOUT_MS', 270_000);
+const childToolWorkflowTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_CHILD_TOOL_WORKFLOW_TIMEOUT_MS', 900_000);
 const selfCheckReuseTtlMs = positiveIntegerFromEnv('ERP_PRODUCT_SELF_CHECK_REUSE_TTL_MS', 120_000);
 const outputSnippetChars = 1600;
 const posixPathEntries = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
@@ -824,6 +825,7 @@ function childToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return childToolUploadTimeoutMs;
   if (name === 'product_create') return childToolCreateTimeoutMs;
+  if (name === 'product_create_from_package') return childToolWorkflowTimeoutMs;
   if (name === 'product_runtime_status' || name === 'product_bridge_config_status') return childToolStatusTimeoutMs;
   return childToolQueryTimeoutMs;
 }
@@ -1720,6 +1722,17 @@ function productFallbackTools() {
       title: 'Precheck product package',
       description:
         'Fallback declaration for prechecking a local ERP product material package before upload/create. The real Product MCP child validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_create_from_package',
+      title: 'Create product from package',
+      description:
+        'Fallback declaration for the high-level local package workflow. The real Product MCP child validates the input and runs precheck, duplicate gate, reference resolution, upload binding, create, and detail verification.',
       inputSchema: {
         type: 'object',
         properties: {},

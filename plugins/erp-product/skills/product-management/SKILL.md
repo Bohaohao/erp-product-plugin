@@ -96,7 +96,7 @@ Recognize natural Chinese material requests and route them into the material wor
 
 If a request gives a rough material directory or may lack a ready `商品资料.md`, first use the `erp-product-material-workflow` skill to create or update `商品资料.md` and run its local checks. Treat missing/nonstandard template structure as a local material blocker; normalize with the packaged template before any Product MCP call. Do not call `product_precheck_package`, `product_upload_file`, or `product_create` until the local material blockers are gone. Only after `erp-product-material-workflow` has produced a checked `商品资料.md` (or the user already provided a ready product package file) do you continue into the Product MCP gates below.
 
-This routing does not relax any safety gate. After the material workflow finishes, the standard chain still applies: `product_runtime_self_check`, `product_auth_status`, `product_precheck_package`, `product_check_name_duplicate` before upload, the upload queue, and explicit user confirmation before `product_create`.
+This routing does not relax any safety gate. After the material workflow finishes, prefer the high-level `product_create_from_package` workflow. It runs precheck, duplicate gate, reference resolution, upload binding, create, detail verification, and the trace/diff report inside Product MCP. Use atomic tools only for debugging, validation-only requests, or an explicitly requested step-by-step workflow.
 
 If those Product MCP tools are unavailable, stop at a tool-availability blocker. Do not switch to Chrome DevTools, Browser tools, or frontend request replay to continue the create workflow.
 
@@ -105,36 +105,33 @@ If those Product MCP tools are unavailable, stop at a tool-availability blocker.
 When the user provides a local product package directory or product markdown file:
 
 1. If the path is a `商品资料.md` package, ensure the material workflow local check has passed, including standard-template validation.
-2. Call `product_precheck_package` with the local path and `includeDraft: true`.
-3. Report blocking errors, warnings, generated image crops, and the upload queue.
-4. If required-field validation passed and the draft contains a Chinese product name, call `product_check_name_duplicate` with that name before any upload. If `exists: true` or `blocking: true`, stop this product immediately; do not call `product_upload_file` or `product_create`.
-5. If this is a multi-agent batch and the current worker found a duplicate, return a failure notification to the controller/orchestrator. Include the package path, `productNameCn`, `duplicates`, and a clear note that no upload/create was performed.
-6. Resolve unresolved names by calling read-only tools:
-   - `product_list_categories` for category names and IDs.
-   - `product_get_category_config` for unit IDs, base configs, technical params, and optional configs.
-   - `product_list_suppliers` for supplier IDs and names.
-   - `product_list_regions` when the draft does not use all regions.
-   - `product_get_dict` when dictionary values are needed.
-7. Upload each valid local file with `product_upload_file`. Preserve `dedupeKey`, `sourceRelativePath`, and `sourceLocalPath` from each `uploadQueue` item so repeated package files can reuse the first OSS URL. Use the returned URL and suggested mapping when building media, certifications, sales support, customer cases, parts, or rich text payloads.
-8. Build the `product_create` input from the precheck draft, resolved backend IDs, uploaded URLs, and any user corrections.
+2. Call `product_create_from_package` with `runMode: "preview"` and `responseMode: "summary"`. Preview mode must not upload and must not create.
+3. Report blocking errors, warnings, reference-resolution results, upload queue count, field coverage, and the create preview summary returned by the workflow.
+4. If duplicate name, missing references, missing required fields, invalid files, or unresolved upload bindings block the workflow, stop and report the actionable issues. Do not switch to atomic upload/create to bypass the blocker.
+5. Ask for explicit user confirmation before real creation. Reuse the `clientRequestId` from preview when one is present so retries can use the workflow journal.
+6. After confirmation, call `product_create_from_package` with `runMode: "create"` and `confirm: true`.
+7. Report the workflow summary, product ID, upload summary, detail verification, and diff report. If the workflow stops before creation, report the exact stage and actionable issues.
+8. Use `product_precheck_package`, `product_upload_file`, `product_create`, and lookup tools directly only when the user explicitly asks for a smaller diagnostic step or the high-level workflow is unavailable.
 
 Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
 
 ## Upload Scope
 
-By default, follow `商品资料.md` and `product_precheck_package.uploadQueue` strictly. Every valid `uploadQueue` item must be uploaded with `product_upload_file` before `product_create`, and the upload success count must equal the valid `uploadQueue` count before `product_create` is called.
+By default, follow `商品资料.md` and Product MCP `uploadQueue` strictly. In the high-level workflow, every valid upload item is handled inside `product_create_from_package`. Atomic workflows must also upload every valid `uploadQueue` item before `product_create`, and the upload success count must equal the valid `uploadQueue` count before creation.
 
 Do not skip, defer, or omit any referenced file because of stability concerns, interface uncertainty, non-required media, a large number of rich media files, or a desire to create a smaller first version. Do not privately narrow upload scope.
 
 The only exception is when the user explicitly asks to upload main/core/basic materials first and complete rich media later, or gives an equivalent instruction. Even under that exception, do not silently skip `uploadQueue` entries: first have the user confirm the reduced material scope, update or require updating `商品资料.md` to remove or adjust the excluded references, rerun the local material check and `product_precheck_package`, then fully upload the resulting new `uploadQueue`.
 
-If any valid referenced item fails to upload or cannot be mapped to a backend reference, stop and report the concrete file plus the available choices: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck. Do not call `product_create` for a reduced product.
+When `product_create_from_package` uploads files, a single file failure is retried once and the workflow continues uploading the remaining files. After the upload stage, any item that still failed is reported with an error marker, and the workflow must not call `product_create`. Do not manually bypass this by calling `product_create` with a reduced product.
+
+For atomic workflows, if any valid referenced item fails to upload or cannot be mapped to a backend reference after retry, stop before `product_create` and report the concrete file plus the available choices: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck.
 
 ## Create Safety
 
-`product_create` writes a real ERP product. Only call it after the user gives an explicit confirmation in the current conversation.
+`product_create_from_package` with `runMode: "create"` and `product_create` both write a real ERP product. Only call either one after the user gives an explicit confirmation in the current conversation.
 
-Before calling `product_create`, summarize the product name, category, unit, supplier, region scope, main image status, and any remaining warnings. The summary must also state the valid `uploadQueue` count, the uploaded count, and the failed/skipped count. Only proceed when the failed/skipped count is `0`, unless the user explicitly narrowed scope and the package was rechecked under the Upload Scope exception. Require `confirm: true` in the tool input.
+Before calling create mode, summarize the product name, category, unit, supplier, region scope, main image status, and any remaining warnings. The summary must also state the valid `uploadQueue` count, the uploaded count, and the failed/skipped count. Only proceed when the failed/skipped count is `0`, unless the user explicitly narrowed scope and the package was rechecked under the Upload Scope exception. Require `confirm: true` in the tool input.
 
 `product_create` should receive business fields and already-uploaded OSS URLs only. Never pass local paths, raw file content, or base64 file payloads to it.
 
@@ -146,6 +143,7 @@ After creation, call `product_get_detail` with the returned product ID to verify
 
 Use these tools directly for smaller requests:
 
+- High-level package workflow: `product_create_from_package`.
 - Login check: `product_auth_status`.
 - Runtime self-check: `product_runtime_self_check`.
 - Runtime check: `product_runtime_status`.

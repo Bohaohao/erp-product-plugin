@@ -229,6 +229,13 @@ When the user asks for official precheck:
 
 `product_precheck_package` is validation and draft preparation. It does not upload and does not create.
 
+For an actual create handoff, prefer `product_create_from_package`:
+
+1. `product_create_from_package({ packagePath, runMode: "preview", responseMode: "summary" })` for side-effect-free precheck, duplicate gate, reference resolution, upload scope, field coverage, and create preview.
+2. Report blockers and the preview summary. If the workflow blocks, do not bypass it through atomic upload/create.
+3. After explicit user confirmation, call `product_create_from_package({ packagePath, runMode: "create", confirm: true, clientRequestId })`.
+4. The high-level workflow uploads and binds files, blocks before `product_create` if any valid upload item still failed, creates only when the package is complete, then verifies with detail lookup and returns a diff report.
+
 Create payloads must not include edit-only nested primary keys such as `medias[].id`, `customerCases[].id`, `partLists[].id`, or `priceTiers[].id`. If those IDs appear in imported full-form data, strip them before `product_create`.
 
 ### Upload scope from `uploadQueue`
@@ -238,7 +245,8 @@ Create payloads must not include edit-only nested primary keys such as `medias[]
 - Treat every valid `uploadQueue` item as required. A valid item is one whose local relative path resolves and is not flagged as an error in `issues`.
 - All valid `uploadQueue` items must be uploaded (and confirmed uploaded) before `product_create`. Do not start creation with a partial upload set.
 - Do not silently split the queue into "core materials first" and "rich media later". If a file is in the valid `uploadQueue`, it is part of this build, not a follow-up.
-- If a non-required rich media / reference file fails to upload (i.e. a file that is referenced but not part of the valid `uploadQueue`, or one the user added beyond the required set), stop and report options to the user — retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the user-confirmed update-and-recheck exception — instead of proceeding with a reduced product.
+- In `product_create_from_package`, each valid upload item is attempted; a single failure is retried once and then marked with an error while the workflow continues uploading the remaining valid items. After the upload stage, any remaining failed valid item blocks creation and is reported with repair options.
+- In an atomic workflow, if a valid upload item fails after retry, stop before `product_create` and report options to the user — retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the user-confirmed update-and-recheck exception — instead of proceeding with a reduced product.
 
 ## 9. Response Pattern
 
