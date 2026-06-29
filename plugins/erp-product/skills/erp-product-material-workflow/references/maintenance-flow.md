@@ -34,6 +34,15 @@ Before filling, precheck, upload, or create:
 
 Product MCP tool availability is also a hard gate. If `product_precheck_package`, lookup, upload, duplicate-check, or create tools are not callable, stop and report the missing Product MCP tool names. Do not continue through Browser tools, Chrome DevTools, frontend session replay, network-panel requests, or manually reconstructed ERP HTTP calls.
 
+The packaged template is intentionally aligned with the ERP create/edit tabs:
+基础信息, 产品配置, 价格信息, 库存与物流, 配件备件, 图文信息, 认证资料, and 销售支持.
+Use it as a full-detail maintenance document. A package can be locally
+create-ready while still producing an empty-looking detail page if rich modules
+are omitted, so when the user provides enough materials, fill the non-required
+detail sections as well: media galleries, 图文详情卡片, 认证资料, 核心优势,
+应用场景, FAQ, 竞品对比, 客户案例, 合规红线, 售后承诺, 故障处理与质保, and
+技术支持联系方式.
+
 ## 3. Large Package Intake
 
 Treat a request to organize all files as a request to manage and classify the whole package, not to read every file's content.

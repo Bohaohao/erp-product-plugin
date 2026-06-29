@@ -75,6 +75,14 @@ Rules:
 - When an existing `商品资料.md` diverges from the standard structure, normalize it to the template structure, preserving every existing value, before any other work.
 - Validate template structure with the local check (see *File Path Rules*). Use `--normalize-template` to create a missing document or apply structural normalization in one step.
 
+The standard template is a full-detail product page template, not a minimal
+create-only checklist. When the user's package contains enough material, fill
+the sections that correspond to the ERP create/edit tabs: 基础信息, 产品配置,
+价格信息, 库存与物流, 配件备件, 图文信息, 认证资料, and 销售支持. Pay special
+attention to rich page content that makes the product detail non-empty:
+商品图片/视频/3D/附件, 图文详情卡片, 认证资料, 核心优势, 应用场景, FAQ, 竞品对比,
+客户案例, 合规红线, 售后服务承诺, 故障处理与质保, and 技术支持联系方式.
+
 ## Cross-Platform Compatibility
 
 The skill must run identically on Windows, macOS, and Linux:

@@ -49,6 +49,7 @@ PRODUCT_MODEL_RE = re.compile(r"^[A-Za-z0-9 ]+$")
 
 PATH_HEADERS_STRICT = {"文件路径", "主图路径", "图片路径", "附件路径"}
 PATH_HEADERS_LOOSE = {"文件路径或内容"}
+PATH_FIELD_ROWS_STRICT = {"故障处理与质保附件"}
 STATIC_TEMPLATE_COLUMNS = {"填写说明", "数量/比例说明", "限制"}
 PATH_EXT_RE = re.compile(
     r"\.(jpg|jpeg|png|gif|webp|mp4|glb|pdf|doc|docx|xls|xlsx|ppt|pptx|txt|rar|7z|csv)\b",
@@ -348,12 +349,17 @@ def check_paths(md_path: Path, lines: List[str]) -> Tuple[List[dict], List[dict]
                 path_indexes.append((idx, name, True))
             elif name in PATH_HEADERS_LOOSE:
                 path_indexes.append((idx, name, False))
-        if not path_indexes:
+        is_field_value_table = len(header) >= 2 and header[0] == "字段" and header[1] == "填写值"
+        if not path_indexes and not is_field_value_table:
             continue
 
         for row_offset, row in enumerate(rows, start=2):
             row_label = row[0] if row else ""
-            for idx, header_name, strict in path_indexes:
+            current_path_indexes = list(path_indexes)
+            if is_field_value_table and len(row) >= 2 and row[0].strip() in PATH_FIELD_ROWS_STRICT:
+                current_path_indexes.append((1, row[0].strip(), True))
+
+            for idx, header_name, strict in current_path_indexes:
                 if idx >= len(row):
                     continue
                 raw = row[idx].strip()
@@ -467,6 +473,30 @@ def check_sales_supports(values: Dict[str, str], tables: List[Tuple[int, List[st
             issues.append(issue("SALES_TECH_SUPPORT_HOURS_REQUIRED", "技术支持联系方式已填写部分内容时，必须填写服务时间。", field="服务时间"))
         if not (values.get("联系电话") or values.get("电子邮箱") or values.get("备用联系方式")):
             issues.append(issue("SALES_TECH_SUPPORT_CHANNEL_REQUIRED", "技术支持联系方式必须至少填写联系电话、电子邮箱或备用联系方式之一。", field="联系电话"))
+
+    def check_title_content_rows(first_header: str, title_field: str, content_field: str, module_name: str) -> None:
+        for index, row in enumerate(dict_rows_by_first_header(tables, first_header), start=1):
+            if first_header == "标题" and content_field not in row:
+                continue
+            has_content = any(row.get(field) for field in [title_field, content_field, "图片路径", "排序", "备注"])
+            if not has_content:
+                continue
+            if not row.get(title_field) or not row.get(content_field):
+                issues.append(
+                    issue(
+                        "SALES_STRUCTURED_ROW_INCOMPLETE",
+                        f"{module_name}第 {index} 行必须同时填写{title_field}和{content_field}。",
+                        field=module_name,
+                        row=index,
+                    )
+                )
+
+    check_title_content_rows("标题", "标题", "内容", "核心优势/应用场景")
+    check_title_content_rows("问题", "问题", "回答", "常见问题与标准回答")
+    check_title_content_rows("异议", "异议", "处理方式", "异议处理")
+    check_title_content_rows("不可承诺事项", "不可承诺事项", "说明", "合规红线")
+    check_title_content_rows("承诺事项", "承诺事项", "说明", "售后服务承诺")
+    check_title_content_rows("政策标题", "政策标题", "政策内容", "质保政策")
     return issues
 
 
