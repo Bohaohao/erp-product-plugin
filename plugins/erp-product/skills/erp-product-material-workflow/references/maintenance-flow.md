@@ -67,7 +67,7 @@ The main job is communication plus assisted filling:
 4. Ask only for business facts that cannot be inferred safely.
 5. When the user answers, update `商品资料.md` and rerun the local check.
 
-Do not ask the user for internal IDs unless they already have them. Ask for names and choices, then resolve IDs later through Product MCP read-only lookup tools.
+Do not ask the user for internal IDs unless they come from an exported source or a previous tool lookup. Ask for names and choices, then resolve IDs later through Product MCP read-only lookup tools. IDs for category configs, technical params, optional configs, units, media rows, customer cases, price tiers, and part rows are not user-maintained fields in `商品资料.md`.
 
 ## 5. Required Field Filling
 
@@ -215,9 +215,12 @@ When the user asks for official precheck:
    - warnings second;
    - valid upload count and generated crops;
    - unresolved references that need lookup or user choice.
-7. If `ok=true` and `draftCreateInput.productNameCn` exists, run duplicate check before upload.
+7. Resolve lookup references in order: exact category path with `product_list_categories`, leaf-category config with `product_get_category_config`, supplier names with `product_list_suppliers`, and specified regions with `product_list_regions`. Use category config to fill `unitId`, base config IDs, technical param IDs, optional config IDs, and optional config item IDs inside the internal draft; do not ask the user to type these IDs.
+8. If `ok=true` and `draftCreateInput.productNameCn` exists, run duplicate check before upload.
 
 `product_precheck_package` is validation and draft preparation. It does not upload and does not create.
+
+Create payloads must not include edit-only nested primary keys such as `medias[].id`, `customerCases[].id`, `partLists[].id`, or `priceTiers[].id`. If those IDs appear in imported full-form data, strip them before `product_create`.
 
 ### Upload scope from `uploadQueue`
 

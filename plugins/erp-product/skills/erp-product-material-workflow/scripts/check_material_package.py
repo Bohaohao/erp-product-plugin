@@ -416,6 +416,60 @@ def missing_issue(field: str, message: str) -> dict:
     return issue("CONDITIONAL_REQUIRED_MISSING", message, field=field)
 
 
+def numeric_value(value: str) -> float | None:
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def check_price_tiers(tables: List[Tuple[int, List[str], List[List[str]]]]) -> List[dict]:
+    issues: List[dict] = []
+    rows = dict_rows_by_first_header(tables, "最小数量")
+    fields = ["最小数量", "最大数量", "单价", "利润率 %", "最短交货天数", "最长交货天数"]
+    for index, row in enumerate(rows, start=1):
+        if not any(row.get(field) for field in fields):
+            continue
+        parsed = {field: numeric_value(row.get(field, "")) for field in fields}
+        for field in fields:
+            if parsed[field] is None:
+                issues.append(issue("PRICE_TIER_ROW_INCOMPLETE", f"价格阶梯第 {index} 行必须补全 {field}。", field=field, row=index))
+        if parsed["最小数量"] is not None and parsed["最大数量"] is not None and parsed["最大数量"] < parsed["最小数量"]:
+            issues.append(issue("PRICE_TIER_QUANTITY_RANGE_INVALID", f"价格阶梯第 {index} 行最大数量不能小于最小数量。", field="最大数量", row=index))
+        if parsed["最短交货天数"] is not None and parsed["最长交货天数"] is not None and parsed["最长交货天数"] < parsed["最短交货天数"]:
+            issues.append(issue("PRICE_TIER_DELIVERY_RANGE_INVALID", f"价格阶梯第 {index} 行最长交货天数不能小于最短交货天数。", field="最长交货天数", row=index))
+    return issues
+
+
+def check_sales_supports(values: Dict[str, str], tables: List[Tuple[int, List[str], List[List[str]]]]) -> List[dict]:
+    issues: List[dict] = []
+    rows = [row for row in dict_rows_by_first_header(tables, "类型") if "标题/问题/异议" in row and "内容/回答/处理方式" in row]
+    for index, row in enumerate(rows, start=1):
+        support_type = row.get("类型", "")
+        has_content = any(row.get(field) for field in ["标题/问题/异议", "内容/回答/处理方式", "文件路径"])
+        if not has_content:
+            continue
+        if support_type == "一句话卖点":
+            if not row.get("内容/回答/处理方式"):
+                issues.append(issue("SALES_ONE_LINE_CONTENT_REQUIRED", f"销售支持第 {index} 行（一句话卖点）必须填写内容。", field="内容/回答/处理方式", row=index))
+            continue
+        if support_type in {"核心优势", "应用场景", "常见问题与标准回答", "常见问题&标准回答", "异议处理", "合规红线", "售后承诺", "售后服务与支持", "质保政策"}:
+            if not row.get("标题/问题/异议") or not row.get("内容/回答/处理方式"):
+                issues.append(issue("SALES_SUPPORT_ROW_INCOMPLETE", f"销售支持第 {index} 行必须同时填写标题和内容。", field="销售支持", row=index))
+
+    tech_fields = ["技术支持联系人", "联系电话", "电子邮箱", "服务时间", "备用联系方式"]
+    if any(values.get(field) for field in tech_fields):
+        if not values.get("技术支持联系人"):
+            issues.append(issue("SALES_TECH_SUPPORT_CONTACT_REQUIRED", "技术支持联系方式已填写部分内容时，必须填写技术支持联系人。", field="技术支持联系人"))
+        if not values.get("服务时间"):
+            issues.append(issue("SALES_TECH_SUPPORT_HOURS_REQUIRED", "技术支持联系方式已填写部分内容时，必须填写服务时间。", field="服务时间"))
+        if not (values.get("联系电话") or values.get("电子邮箱") or values.get("备用联系方式")):
+            issues.append(issue("SALES_TECH_SUPPORT_CHANNEL_REQUIRED", "技术支持联系方式必须至少填写联系电话、电子邮箱或备用联系方式之一。", field="联系电话"))
+    return issues
+
+
 def check_business_rules(values: Dict[str, str], tables: List[Tuple[int, List[str], List[List[str]]]]) -> Tuple[List[str], List[dict]]:
     missing: List[str] = []
     issues: List[dict] = []
@@ -481,6 +535,9 @@ def check_business_rules(values: Dict[str, str], tables: List[Tuple[int, List[st
             if not values.get(field):
                 missing.append(field)
                 issues.append(missing_issue(field, f"产品类型为{product_type}时，{field}必填。"))
+
+    issues.extend(check_price_tiers(tables))
+    issues.extend(check_sales_supports(values, tables))
 
     return missing, issues
 

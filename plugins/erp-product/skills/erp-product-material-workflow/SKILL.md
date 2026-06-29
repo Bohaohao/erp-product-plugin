@@ -57,7 +57,8 @@ Default to a conversational fill-and-check loop:
    - Preserve the template structure.
    - Prefer names over IDs in `商品资料.md`; resolve IDs later with read-only Product MCP tools.
    - Keep optional fields blank when the user does not know them.
-   - Large numeric IDs, if supplied, must remain strings.
+   - Do not ask users to manually provide internal ERP IDs for category config, technical params, optional configs, media, cases, price tiers, or part rows. ID fields needed for creation are system-resolved and carried only inside `draftCreateInput`.
+   - Large numeric IDs, if supplied by an exported source or a tool lookup, must remain strings.
 
 ## Standard Template
 
@@ -260,6 +261,14 @@ Resolve names with read-only tools:
 - `product_get_dict` for dictionary labels/values.
 
 Report ambiguous matches and ask the user to choose. Do not silently pick a risky match.
+
+Lookup order for create-ready drafts:
+
+1. Resolve the category path by exact name match with `product_list_categories`. If a selected category has enabled children, continue matching until the exact leaf category is found.
+2. Call `product_get_category_config` with the resolved leaf category ID.
+3. Use the category config result to fill `unitId`, `baseConfigs[].categoryBaseId`, `technicalParams[].categoryBaseId`, `optionalConfigs[].categoryOptionalId`, and `optionalConfigs[].categoryOptionalConfigId` in the internal create draft. Do not ask the user to fill those IDs in `商品资料.md`.
+4. Resolve supplier and region names with their read-only tools.
+5. For create operations, do not submit edit-only nested primary keys such as `medias[].id`, `customerCases[].id`, `partLists[].id`, or `priceTiers[].id`.
 
 ## Create Handoff
 
