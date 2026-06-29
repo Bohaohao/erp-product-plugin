@@ -276,6 +276,7 @@ Lookup order for create-ready drafts:
 1. Resolve the category path by exact name match with `product_list_categories`. If a selected category has enabled children, continue matching until the exact leaf category is found.
 2. Call `product_get_category_config` with the resolved leaf category ID.
 3. Use the category config result to fill `unitId`, `baseConfigs[].categoryBaseId`, `technicalParams[].categoryBaseId`, `optionalConfigs[].categoryOptionalId`, and `optionalConfigs[].categoryOptionalConfigId` in the internal create draft. Do not ask the user to fill those IDs in `商品资料.md`.
+   `partLists[].unitName` is different: the unit for 配件/备件/易损件 is a plain string form field. Do not resolve it to `unitId`, and do not ask the user for `partLists[].unitId`.
 4. Resolve supplier and region names with their read-only tools.
 5. For create operations, do not submit edit-only nested primary keys such as `medias[].id`, `customerCases[].id`, `partLists[].id`, or `priceTiers[].id`.
 

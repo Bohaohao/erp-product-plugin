@@ -224,7 +224,7 @@ When the user asks for official precheck:
    - warnings second;
    - valid upload count and generated crops;
    - unresolved references that need lookup or user choice.
-7. Resolve lookup references in order: exact category path with `product_list_categories`, leaf-category config with `product_get_category_config`, supplier names with `product_list_suppliers`, and specified regions with `product_list_regions`. Use category config to fill `unitId`, base config IDs, technical param IDs, optional config IDs, and optional config item IDs inside the internal draft; do not ask the user to type these IDs.
+7. Resolve lookup references in order: exact category path with `product_list_categories`, leaf-category config with `product_get_category_config`, supplier names with `product_list_suppliers`, and specified regions with `product_list_regions`. Use category config to fill product-level `unitId`, base config IDs, technical param IDs, optional config IDs, and optional config item IDs inside the internal draft; do not ask the user to type these IDs. Do not resolve 配件/备件/易损件 `partLists[].unitName` to `unitId`; it is a plain string field.
 8. If `ok=true` and `draftCreateInput.productNameCn` exists, run duplicate check before upload.
 
 `product_precheck_package` is validation and draft preparation. It does not upload and does not create.
