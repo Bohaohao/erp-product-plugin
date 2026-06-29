@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.22';
+const proxyVersion = '0.3.23';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -348,15 +348,45 @@ function runtimeDependencyFor(dir) {
   return join(dir, 'node_modules', '@modelcontextprotocol', 'sdk', 'package.json');
 }
 
-function sourceEntryFor(dir) {
-  return join(dir, 'src', 'localBridge.ts');
+function sourceRootFor(dir) {
+  return join(dir, 'src');
+}
+
+function isBuildSourceFile(filePath) {
+  if (/\.d\.ts$/i.test(filePath)) return false;
+  return /\.(ts|tsx|js|mjs)$/i.test(filePath);
+}
+
+function listFilesRecursive(root, predicate) {
+  const files = [];
+  if (!existsSync(root)) return files;
+
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const entryPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...listFilesRecursive(entryPath, predicate));
+    } else if (entry.isFile() && predicate(entryPath)) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
+function buildOutputForSource(dir, sourcePath) {
+  const relativeSourcePath = relative(sourceRootFor(dir), sourcePath);
+  const relativeOutputPath = relativeSourcePath.replace(/\.(tsx?|mjs|js)$/i, '.js');
+  return join(dir, 'dist', relativeOutputPath);
 }
 
 function isSourceNewerThanBuild(dir) {
   try {
-    const source = statSync(sourceEntryFor(dir));
-    const build = statSync(bridgeEntryFor(dir));
-    return source.mtimeMs > build.mtimeMs;
+    const sourceFiles = listFilesRecursive(sourceRootFor(dir), isBuildSourceFile);
+    return sourceFiles.some((sourcePath) => {
+      const buildPath = buildOutputForSource(dir, sourcePath);
+      if (!existsSync(buildPath)) return true;
+      return statSync(sourcePath).mtimeMs > statSync(buildPath).mtimeMs;
+    });
   } catch {
     return false;
   }
