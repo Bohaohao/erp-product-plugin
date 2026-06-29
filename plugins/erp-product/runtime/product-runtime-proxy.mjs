@@ -15,7 +15,7 @@ const cachedProductMcp = join(homedir(), '.erp-product', 'product-mcp');
 const npmCacheDir = join(homedir(), '.erp-product', 'npm-cache');
 const sourceBridgeConfig = join(pluginRoot, 'config', 'product-token-bridge.config.json');
 const runtimeBridgeConfig = join(homedir(), '.erp-product', 'product-token-bridge.config.json');
-const proxyVersion = '0.3.21';
+const proxyVersion = '0.3.22';
 const runtimeUpdateCheckIntervalMs = 5 * 60 * 1000;
 const externalCommandTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_COMMAND_TIMEOUT_MS', 90_000);
 const npmInstallTimeoutMs = positiveIntegerFromEnv('ERP_PRODUCT_NPM_INSTALL_TIMEOUT_MS', 180_000);
@@ -38,6 +38,7 @@ let childClient;
 let childTransport;
 let childStartedAt;
 let childRuntimeCommit;
+let childRuntimeVersion;
 let childBridgeConfigHash;
 let childTokenDaemonStatus;
 let childToolsCache = [];
@@ -371,6 +372,25 @@ function gitHeadSafe(dir) {
     return gitHead(dir);
   } catch {
     return null;
+  }
+}
+
+function productMcpPackageInfoSafe(dir) {
+  try {
+    if (!dir) return { version: null, packagePath: null, error: null };
+    const packagePath = join(dir, 'package.json');
+    if (!existsSync(packagePath)) {
+      return { version: null, packagePath, error: 'package_json_missing' };
+    }
+    const parsed = JSON.parse(readFileSync(packagePath, 'utf8'));
+    const version = typeof parsed.version === 'string' && parsed.version.trim() ? parsed.version.trim() : null;
+    return { version, packagePath, error: version ? null : 'package_version_missing' };
+  } catch (error) {
+    return {
+      version: null,
+      packagePath: dir ? join(dir, 'package.json') : null,
+      error: error instanceof Error ? error.message : String(error)
+    };
   }
 }
 
@@ -1104,6 +1124,7 @@ async function startChildRuntime() {
       childToolsCache = [];
       childStartedAt = undefined;
       childRuntimeCommit = undefined;
+      childRuntimeVersion = undefined;
       childBridgeConfigHash = undefined;
       childTokenDaemonStatus = undefined;
     }
@@ -1115,6 +1136,7 @@ async function startChildRuntime() {
   childTransport = transport;
   childStartedAt = new Date().toISOString();
   childRuntimeCommit = gitHeadSafe(productMcpDir);
+  childRuntimeVersion = productMcpPackageInfoSafe(productMcpDir).version;
   childBridgeConfigHash = bridgeConfigHash;
   childTokenDaemonStatus = childTokenDaemonStatusFromResult(daemonResult);
   childToolsCache = [];
@@ -1257,6 +1279,7 @@ async function syncProductMcp(options = {}) {
 
 function runtimeStatus(extra = {}) {
   const now = Date.now();
+  const productMcpPackage = productMcpPackageInfoSafe(productMcpDir);
   return {
     proxy: {
       name: 'erp-product-runtime-proxy',
@@ -1270,6 +1293,9 @@ function runtimeStatus(extra = {}) {
       ref: productMcpRef,
       dir: productMcpDir,
       source: productMcp?.source ?? null,
+      version: productMcpPackage.version,
+      packagePath: productMcpPackage.packagePath,
+      packageVersionError: productMcpPackage.error,
       commit: gitHeadSafe(productMcpDir),
       cachedDir: cachedProductMcp,
       siblingFallbackDir: siblingProductMcp,
@@ -1280,6 +1306,7 @@ function runtimeStatus(extra = {}) {
       running: Boolean(childClient),
       pid: childTransport?.pid ?? null,
       startedAt: childStartedAt ?? null,
+      version: childRuntimeVersion ?? null,
       commit: childRuntimeCommit ?? null,
       bridgeConfigHash: childBridgeConfigHash ?? null,
       tokenDaemon: childTokenDaemonStatus ?? null,
@@ -1491,6 +1518,14 @@ async function runtimeSelfCheck() {
           bridgeVersion: childConfigStatus.bridge?.version
         }
       : null,
+    versionSummary: {
+      productMcpVersion: status.productMcp.version,
+      productMcpCommit: status.productMcp.commit,
+      childRuntimeProductMcpVersion: status.childRuntime.version,
+      childRuntimeProductMcpCommit: status.childRuntime.commit,
+      runtimeProxyVersion: status.proxy.version,
+      tokenBridgeVersion: status.tokenDaemon.info?.version ?? null
+    },
     tokenDaemon: status.tokenDaemon,
     checks,
     runtime: status,
