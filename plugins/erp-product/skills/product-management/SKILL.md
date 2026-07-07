@@ -166,6 +166,7 @@ Use these tools directly for smaller requests:
 
 - High-level package workflow: `product_create_from_package`.
 - High-level batch workflow: `product_create_from_batch`.
+- Certification OCR helper: `product_ocr_certifications`.
 - Login check: `product_auth_status`.
 - Runtime self-check: `product_runtime_self_check`.
 - Runtime check: `product_runtime_status`.

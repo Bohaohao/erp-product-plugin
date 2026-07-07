@@ -1166,6 +1166,17 @@ function fallbackRuntimeTools() {
       }
     },
     {
+      name: 'product_ocr_certifications',
+      title: 'OCR product certification materials',
+      description:
+        'Fallback declaration for local OCR-assisted certification field suggestions/writeback. The real Product MCP runtime validates the input and runs local OCR without ERP mutation.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
       name: 'product_create_from_package',
       title: 'Create product from package',
       description:
@@ -1331,7 +1342,7 @@ function runtimeToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return runtimeToolUploadTimeoutMs;
   if (name === 'product_create') return runtimeToolCreateTimeoutMs;
-  if (name === 'product_create_from_package' || name === 'product_create_from_batch') return runtimeToolWorkflowTimeoutMs;
+  if (name === 'product_create_from_package' || name === 'product_create_from_batch' || name === 'product_ocr_certifications') return runtimeToolWorkflowTimeoutMs;
   if (
     name === 'product_runtime_status' ||
     name === 'product_runtime_launcher_status' ||

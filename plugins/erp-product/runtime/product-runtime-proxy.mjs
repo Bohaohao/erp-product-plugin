@@ -825,7 +825,7 @@ function childToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return childToolUploadTimeoutMs;
   if (name === 'product_create') return childToolCreateTimeoutMs;
-  if (name === 'product_create_from_package' || name === 'product_create_from_batch') return childToolWorkflowTimeoutMs;
+  if (name === 'product_create_from_package' || name === 'product_create_from_batch' || name === 'product_ocr_certifications') return childToolWorkflowTimeoutMs;
   if (name === 'product_runtime_status' || name === 'product_bridge_config_status') return childToolStatusTimeoutMs;
   return childToolQueryTimeoutMs;
 }
@@ -1722,6 +1722,17 @@ function productFallbackTools() {
       title: 'Precheck product package',
       description:
         'Fallback declaration for prechecking a local ERP product material package before upload/create. The real Product MCP child validates the full input schema.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_ocr_certifications',
+      title: 'OCR product certification materials',
+      description:
+        'Fallback declaration for local OCR-assisted certification field suggestions/writeback. The real Product MCP child validates the input and runs local OCR without ERP mutation.',
       inputSchema: {
         type: 'object',
         properties: {},

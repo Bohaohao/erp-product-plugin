@@ -47,6 +47,7 @@ Default to a conversational fill-and-check loop:
    - Inspect nearby filenames, folder names, extensions, file sizes, and relative paths before reading file contents.
    - Use user-provided documents, spreadsheets, image names, attachment names, and notes as clues, but read large or binary files only when there is a specific extraction reason.
    - Mark inferred values as "待确认" when they affect business truth.
+   - For certification PDFs/images, use `product_ocr_certifications` when Product MCP is available. OCR may fill blank high-confidence certification fields, but must not overwrite user/table values, must keep low-confidence values as suggestions, and must still be followed by Product MCP precheck/preview. If the user explicitly asks to keep dates blank, pass the OCR date policy so OCR dates are not written back.
 
 4. Ask concise grouped questions.
    - Do not ask the user to understand Product MCP IDs or internal schema names.
