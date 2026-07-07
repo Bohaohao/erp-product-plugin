@@ -1177,6 +1177,17 @@ function fallbackRuntimeTools() {
       }
     },
     {
+      name: 'product_create_from_batch',
+      title: 'Create products from batch',
+      description:
+        'Fallback declaration for the high-level Product MCP batch spreadsheet plus material-package workflow. The real Product MCP runtime validates the input and runs row-level material organization, precheck, duplicate gate, reference resolution, upload binding, create, per-row failure writeback, and detail verification.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
       name: 'product_upload_file',
       title: 'Upload product file',
       description:
@@ -1320,7 +1331,7 @@ function runtimeToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return runtimeToolUploadTimeoutMs;
   if (name === 'product_create') return runtimeToolCreateTimeoutMs;
-  if (name === 'product_create_from_package') return runtimeToolWorkflowTimeoutMs;
+  if (name === 'product_create_from_package' || name === 'product_create_from_batch') return runtimeToolWorkflowTimeoutMs;
   if (
     name === 'product_runtime_status' ||
     name === 'product_runtime_launcher_status' ||

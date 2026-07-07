@@ -58,6 +58,82 @@ PATH_EXT_RE = re.compile(
 URL_RE = re.compile(r"^(https?://|oss://)", re.IGNORECASE)
 ABS_WIN_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 BASE64_RE = re.compile(r"^(data:[^,]+;base64,|[A-Za-z0-9+/]{120,}={0,2}$)")
+SOURCE_CLASSIFICATION_REMARK_RE = re.compile(r"原始表格分类：([^；;]+)")
+ORIGINAL_CLASSIFICATION_REMARK_RE = re.compile(r"原目录/原分类：([^；;]+)")
+TARGET_CLASSIFICATION_REMARK_RE = re.compile(r"目标分类：([^；;]+)")
+PRESERVE_ORIGINAL_REMARK = "目标模板无同名分类，保留原始分类"
+SUBJECTIVE_FALLBACK_REASON = "目标模板无同名分类且无法保留原分类，按内容语义降级映射。"
+
+IMAGE_CLASSIFICATION_MAP = {
+    "主图": "商品主图",
+    "封面": "商品主图",
+    "商品封面": "商品主图",
+    "main": "商品主图",
+    "cover": "商品主图",
+    "banner": "Banner 图",
+    "横幅": "Banner 图",
+    "头图": "Banner 图",
+    "海报": "Banner 图",
+    "详情": "细节图",
+    "详情图": "细节图",
+    "细节": "细节图",
+    "detail": "细节图",
+    "尺寸": "尺寸图",
+    "尺码": "尺寸图",
+    "size": "尺寸图",
+    "场景": "场景图",
+    "应用场景": "场景图",
+    "scene": "场景图",
+    "包装": "包装图",
+    "包装图片": "包装图",
+    "package": "包装图",
+    "packing": "包装图",
+    "多角度": "多角度实拍图",
+    "多角度图": "多角度实拍图",
+    "实拍图": "多角度实拍图",
+    "配件": "配件图",
+    "配件图片": "配件图",
+    "accessories": "配件图",
+}
+MEDIA_CLASSIFICATION_MAP = {
+    "实拍": "实拍视频",
+    "产品视频": "实拍视频",
+    "视频": "实拍视频",
+    "video": "实拍视频",
+    "装柜": "装柜视频",
+    "装柜实拍": "装柜视频",
+    "loading": "装柜视频",
+    "作业": "作业视频",
+    "施工": "作业视频",
+    "work": "作业视频",
+    "安装": "安装视频",
+    "install": "安装视频",
+    "包装": "包装视频",
+    "包装实拍": "包装视频",
+    "package": "包装视频",
+    "packing": "包装视频",
+    "链界实测": "链界实测视频",
+    "链界": "链界实测视频",
+    "三方实测": "三方实测视频",
+    "三方": "三方实测视频",
+    "第三方实测": "三方实测视频",
+    "3d": "3D 展示",
+    "3D": "3D 展示",
+    "3D模型": "3D 展示",
+    "3D 模型": "3D 展示",
+    "附件": "商品附件",
+    "商品资料": "商品附件",
+    "文档": "商品附件",
+    "资料": "商品附件",
+}
+RICH_TEXT_CLASSIFICATION_MAP = {
+    "图片": "富文本图片",
+    "图文图片": "富文本图片",
+    "详情图片": "图文详情图片",
+    "视频": "富文本视频",
+    "附件": "富文本附件",
+    "文档": "富文本附件",
+}
 
 
 def read_text(path: Path) -> str:
@@ -245,6 +321,115 @@ def check_template_structure(
             issues.append(issue("MISSING_IMAGE_ROW", "缺少标准图片用途行。", row=image_row))
 
     return not issues, version, issues
+
+
+def normalized_category_key(value: str) -> str:
+    return re.sub(r"\s+", "", value.strip()).lower()
+
+
+def explicit_classification_mapping(kind: str, original: str) -> str | None:
+    maps = {
+        "image": IMAGE_CLASSIFICATION_MAP,
+        "media": MEDIA_CLASSIFICATION_MAP,
+        "rich_text": RICH_TEXT_CLASSIFICATION_MAP,
+    }
+    mapping = maps[kind]
+    if original in mapping:
+        return mapping[original]
+    normalized = normalized_category_key(original)
+    for source, target in mapping.items():
+        if normalized_category_key(source) == normalized:
+            return target
+    return None
+
+
+def direct_parent_category(path_value: str) -> str:
+    normalized = path_value.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part and part != "."]
+    if len(parts) < 2:
+        return ""
+    return parts[-2].strip()
+
+
+def remark_value(pattern: re.Pattern[str], remark: str) -> str:
+    match = pattern.search(remark)
+    return match.group(1).strip() if match else ""
+
+
+def check_media_classification_boundary(tables: List[Tuple[int, List[str], List[List[str]]]]) -> List[dict]:
+    issues: List[dict] = []
+    for start_line, header, rows in tables:
+        if "图片用途" in header and "文件路径" in header:
+            label_header = "图片用途"
+            path_header = "文件路径"
+            kind = "image"
+        elif "资料用途" in header and "文件路径" in header:
+            label_header = "资料用途"
+            path_header = "文件路径"
+            kind = "media"
+        elif "资料用途" in header and "文件路径或内容" in header:
+            label_header = "资料用途"
+            path_header = "文件路径或内容"
+            kind = "rich_text"
+        else:
+            continue
+
+        label_index = header.index(label_header)
+        path_index = header.index(path_header)
+        remark_index = header.index("备注") if "备注" in header else -1
+        for row_offset, row in enumerate(rows, start=1):
+            label = row[label_index].strip() if label_index < len(row) else ""
+            path_value = row[path_index].strip() if path_index < len(row) else ""
+            remark = row[remark_index].strip() if remark_index >= 0 and remark_index < len(row) else ""
+            if not label or not path_value or not looks_like_path(path_value):
+                continue
+
+            source_classification = remark_value(SOURCE_CLASSIFICATION_REMARK_RE, remark)
+            if source_classification and label != source_classification:
+                issues.append(
+                    issue(
+                        "MEDIA_CLASSIFICATION_SOURCE_MISMATCH",
+                        f"{label_header} 被改写：原始表格分类为「{source_classification}」，当前为「{label}」。",
+                        line=start_line + row_offset + 1,
+                        field=label_header,
+                    )
+                )
+                continue
+
+            original_from_remark = remark_value(ORIGINAL_CLASSIFICATION_REMARK_RE, remark)
+            direct_parent = direct_parent_category(path_value)
+            original = "" if original_from_remark == "空" else (original_from_remark or direct_parent)
+
+            if SUBJECTIVE_FALLBACK_REASON in remark:
+                target = remark_value(TARGET_CLASSIFICATION_REMARK_RE, remark)
+                if not original_from_remark or not target or target != label:
+                    issues.append(
+                        issue(
+                            "MEDIA_CLASSIFICATION_FALLBACK_TRACE_MISSING",
+                            "使用了主观降级分类，但备注没有完整记录原分类、目标分类和原因。",
+                            line=start_line + row_offset + 1,
+                            field=label_header,
+                        )
+                    )
+                continue
+
+            if not original or label == original:
+                continue
+            mapped = explicit_classification_mapping(kind, original)
+            if mapped and mapped == label:
+                continue
+            if PRESERVE_ORIGINAL_REMARK in remark and label == original:
+                continue
+
+            issues.append(
+                issue(
+                    "MEDIA_CLASSIFICATION_DIRECTORY_MISMATCH",
+                    f"{label_header}「{label}」与直接父目录/原分类「{original}」不一致，且没有明确等价映射。",
+                    line=start_line + row_offset + 1,
+                    field=label_header,
+                )
+            )
+    return issues
 
 
 def looks_like_path(value: str) -> bool:
@@ -594,6 +779,7 @@ def main() -> int:
 
     missing = [field for field in REQUIRED_FIELD_ROWS if not values.get(field)]
     conditional_missing, business_issues = check_business_rules(values, tables)
+    business_issues.extend(check_media_classification_boundary(tables))
     for field in conditional_missing:
         if field not in missing:
             missing.append(field)

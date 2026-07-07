@@ -33,7 +33,7 @@ Product MCP bridge `0.1.12` and later attaches redacted `details.chromePages` di
 
 ERP Product plugin `0.3.16` and later has the Runtime Proxy start or reuse the Product MCP local Token Bridge Daemon when `<productMcpDir>/dist/tokenBridgeDaemon.js` exists. The proxy injects `PRODUCT_TOKEN_DAEMON_URL` and `PRODUCT_TOKEN_DAEMON_SECRET` into the Product MCP child runtime, keeps the daemon alive across Product MCP child hot-restarts, and closes it only when the Runtime Proxy exits. If daemon startup fails or the entry is missing, the proxy falls back to the legacy `localBridge.js` token path and exposes the reason in `product_runtime_self_check` / `product_runtime_status` under `tokenDaemon`; report that diagnostic instead of saying all `product_*` tools disappeared.
 
-ERP Product plugin `0.3.17` and later predeclares known Product MCP business tools from the Launcher and Runtime Proxy. If runtime status shows `cachedToolCount: 0` but `product_precheck_package`, `product_upload_file`, `product_create`, and lookup tools are visible in the current Codex tool list, do not stop or ask the user to restart. Continue through the standard tools; the fallback declarations only keep tool names visible, while the Product MCP child runtime still executes and validates the real calls. Ask for reconnect/restart only when the required tool names are genuinely absent from the current Codex tool list after `product_runtime_self_check`.
+ERP Product plugin `0.3.17` and later predeclares known Product MCP business tools from the Launcher and Runtime Proxy. If runtime status shows `cachedToolCount: 0` but `product_precheck_package`, `product_upload_file`, `product_create`, high-level create workflows, and lookup tools are visible in the current Codex tool list, do not stop or ask the user to restart. Continue through the standard tools; the fallback declarations only keep tool names visible, while the Product MCP child runtime still executes and validates the real calls. Ask for reconnect/restart only when the required tool names are genuinely absent from the current Codex tool list after `product_runtime_self_check`.
 
 Product MCP bridge `0.1.15` and ERP Product plugin `0.3.18` and later expose `product_check_name_duplicate`. Treat it as a mandatory create gate: after `product_precheck_package` required-field validation passes and before any file upload or create call, check `draft.productNameCn` / the package Chinese product name. If the tool returns `exists: true` or `blocking: true`, stop this product's workflow and report the duplicate instead of uploading files.
 
@@ -94,9 +94,11 @@ Recognize natural Chinese material requests and route them into the material wor
 - 整理成可创建的商品资料包
 - 根据商品材料包创建商品
 
+Recognize batch create requests and prefer `product_create_from_batch` over single-package routing when the user mentions a spreadsheet/table or asks for multiple products in one workflow. Treat phrases such as "创建表格中的商品", "根据表格批量创建商品", "批量整理并创建", "批量整理资料包并创建", and close phrasings as batch-mode triggers.
+
 If a request gives a rough material directory or may lack a ready `商品资料.md`, first use the `erp-product-material-workflow` skill to create or update `商品资料.md` and run its local checks. Treat missing/nonstandard template structure as a local material blocker; normalize with the packaged template before any Product MCP call. Do not call `product_precheck_package`, `product_upload_file`, or `product_create` until the local material blockers are gone. Only after `erp-product-material-workflow` has produced a checked `商品资料.md` (or the user already provided a ready product package file) do you continue into the Product MCP gates below.
 
-This routing does not relax any safety gate. After the material workflow finishes, prefer the high-level `product_create_from_package` workflow. It runs precheck, duplicate gate, reference resolution, upload binding, create, detail verification, and the trace/diff report inside Product MCP. Use atomic tools only for debugging, validation-only requests, or an explicitly requested step-by-step workflow.
+This routing does not relax any safety gate. For a single product after the material workflow finishes, prefer the high-level `product_create_from_package` workflow. For batch table plus material-package requests, prefer `product_create_from_batch`. The high-level workflows run precheck, duplicate gate, reference resolution, upload binding, create, detail verification, and trace/diff reporting inside Product MCP. Use atomic tools only for debugging, validation-only requests, or an explicitly requested step-by-step workflow.
 
 If those Product MCP tools are unavailable, stop at a tool-availability blocker. Do not switch to Chrome DevTools, Browser tools, or frontend request replay to continue the create workflow.
 
@@ -115,21 +117,40 @@ When the user provides a local product package directory or product markdown fil
 
 Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
 
+## Batch Workflow
+
+When the user provides a spreadsheet/table plus one or more material packages, or asks to create products from rows:
+
+1. Treat the spreadsheet as the row-level source of truth for business facts. Treat material package files, filenames, and folder metadata as supplementary evidence for each row, not as a reason to overwrite explicit table cells.
+2. By default, each row is an independent product. Do not merge rows into variants, SKUs, or one product unless the table or user explicitly says so.
+3. Call `product_create_from_batch` with `runMode: "preview"` and `responseMode: "summary"`. Preview mode must not upload and must not create.
+4. Report batch-level blockers, row-level blockers, duplicate-name results, reference-resolution results, upload queue counts, field coverage, and the create preview summary returned by the workflow.
+5. Ask for one explicit confirmation that covers the whole batch before real creation. If the user wants only selected rows, the selection must be explicit before create mode.
+6. After confirmation, call `product_create_from_batch` with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when one is present.
+7. If any row fails, report the row identifier and the writeback location/status returned by the workflow. A row-level failure must not be hidden by successful rows.
+8. Do not switch to per-row `product_create_from_package` or atomic upload/create to bypass a batch blocker unless the user explicitly narrows the task to a single product or diagnostic step.
+
 ## Upload Scope
 
-By default, follow `商品资料.md` and Product MCP `uploadQueue` strictly. In the high-level workflow, every valid upload item is handled inside `product_create_from_package`. Atomic workflows must also upload every valid `uploadQueue` item before `product_create`, and the upload success count must equal the valid `uploadQueue` count before creation.
+By default, follow `商品资料.md`, batch table rows, and Product MCP `uploadQueue` strictly. In the high-level workflows, every valid upload item is handled inside `product_create_from_package` or `product_create_from_batch`. Atomic workflows must also upload every valid `uploadQueue` item before `product_create`, and the upload success count must equal the valid `uploadQueue` count before creation.
 
 Do not skip, defer, or omit any referenced file because of stability concerns, interface uncertainty, non-required media, a large number of rich media files, or a desire to create a smaller first version. Do not privately narrow upload scope.
 
 The only exception is when the user explicitly asks to upload main/core/basic materials first and complete rich media later, or gives an equivalent instruction. Even under that exception, do not silently skip `uploadQueue` entries: first have the user confirm the reduced material scope, update or require updating `商品资料.md` to remove or adjust the excluded references, rerun the local material check and `product_precheck_package`, then fully upload the resulting new `uploadQueue`.
 
-When `product_create_from_package` uploads files, a single file failure is retried once and the workflow continues uploading the remaining files. After the upload stage, any item that still failed is reported with an error marker, and the workflow must not call `product_create`. Do not manually bypass this by calling `product_create` with a reduced product.
+When `product_create_from_package` or `product_create_from_batch` uploads files, a single file failure is retried once and the workflow continues uploading the remaining files. After the upload stage, any item that still failed is reported with an error marker, and the workflow must not call `product_create` for the affected product. Do not manually bypass this by calling `product_create` with a reduced product.
 
 For atomic workflows, if any valid referenced item fails to upload or cannot be mapped to a backend reference after retry, stop before `product_create` and report the concrete file plus the available choices: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck.
 
+## Media Classification Boundary
+
+Before upload/create, enforce media/attachment classification consistency. If a spreadsheet row supplies a media classification/use/type, the media row must keep that exact value. Otherwise, the row classification must come from the direct parent folder name, an exact ERP/template category with the same name, or an explicitly maintained mapping. Do not subjectively rewrite categories when the original can be preserved; examples that must be blocked include `实测视频` -> `作业视频` and `配件图` -> `属具图`.
+
+If no exact category or explicit mapping exists, keep the original folder/category text and mark the row remark with `目标模板无同名分类，保留原始分类`. Subjective fallback requires the full trace `原目录/原分类：X；目标分类：Y；原因：目标模板无同名分类且无法保留原分类，按内容语义降级映射。` Product MCP precheck or the local checker may block the workflow if this trace is missing or inconsistent.
+
 ## Create Safety
 
-`product_create_from_package` with `runMode: "create"` and `product_create` both write a real ERP product. Only call either one after the user gives an explicit confirmation in the current conversation.
+`product_create_from_package` or `product_create_from_batch` with `runMode: "create"` and `product_create` all write real ERP products. Only call create mode after the user gives an explicit confirmation in the current conversation. For batch mode, the confirmation may cover the whole batch, but it must identify whether all rows or only selected rows will be created.
 
 Before calling create mode, summarize the product name, category, unit, supplier, region scope, main image status, and any remaining warnings. The summary must also state the valid `uploadQueue` count, the uploaded count, and the failed/skipped count. Only proceed when the failed/skipped count is `0`, unless the user explicitly narrowed scope and the package was rechecked under the Upload Scope exception. Require `confirm: true` in the tool input.
 
@@ -144,6 +165,7 @@ After creation, call `product_get_detail` with the returned product ID to verify
 Use these tools directly for smaller requests:
 
 - High-level package workflow: `product_create_from_package`.
+- High-level batch workflow: `product_create_from_batch`.
 - Login check: `product_auth_status`.
 - Runtime self-check: `product_runtime_self_check`.
 - Runtime check: `product_runtime_status`.

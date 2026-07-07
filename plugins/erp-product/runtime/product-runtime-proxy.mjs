@@ -825,7 +825,7 @@ function childToolTimeoutMs(name) {
   }
   if (name === 'product_upload_file') return childToolUploadTimeoutMs;
   if (name === 'product_create') return childToolCreateTimeoutMs;
-  if (name === 'product_create_from_package') return childToolWorkflowTimeoutMs;
+  if (name === 'product_create_from_package' || name === 'product_create_from_batch') return childToolWorkflowTimeoutMs;
   if (name === 'product_runtime_status' || name === 'product_bridge_config_status') return childToolStatusTimeoutMs;
   return childToolQueryTimeoutMs;
 }
@@ -1733,6 +1733,17 @@ function productFallbackTools() {
       title: 'Create product from package',
       description:
         'Fallback declaration for the high-level local package workflow. The real Product MCP child validates the input and runs precheck, duplicate gate, reference resolution, upload binding, create, and detail verification.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+        additionalProperties: true
+      }
+    },
+    {
+      name: 'product_create_from_batch',
+      title: 'Create products from batch',
+      description:
+        'Fallback declaration for the high-level batch spreadsheet plus material-package workflow. The real Product MCP child validates the input and runs row-level material organization, precheck, duplicate gate, reference resolution, upload binding, create, per-row failure writeback, and detail verification.',
       inputSchema: {
         type: 'object',
         properties: {},

@@ -57,6 +57,17 @@ Default behavior for large packages:
 
 When reporting progress, mention that large files were inventoried/classified rather than content-read.
 
+### Spreadsheet-driven batch intake
+
+When the user provides a spreadsheet/table and asks to organize or create multiple products, treat the spreadsheet as the row-level fact source and the material package as supporting evidence:
+
+1. Spreadsheet cells win for explicit business facts: product name, type, category, unit, supplier, region scope, support flags, prices, packaging fields, and row notes.
+2. Package folders, filenames, existing `商品资料.md` files, and lightweight metadata can fill blanks, validate file references, or suggest candidates, but they must not overwrite explicit table values without confirmation.
+3. Default to one independent product per row. Do not merge rows into variants, SKUs, or one product unless the user/table explicitly defines that grouping.
+4. A batch preview can collect one confirmation for the whole batch. If only selected rows should be created, capture the row set before create mode.
+5. Row-level failures must be reported by row identifier and written back to the spreadsheet/status artifact when the batch workflow returns a writeback target.
+6. Single-product gates still apply to every row, including required fields, duplicate checks, reference lookup, upload completeness, explicit confirmation, and the prohibition on core-materials-only first create.
+
 ## 4. Guided Filling Principles
 
 The main job is communication plus assisted filling:
@@ -192,7 +203,21 @@ data:image/png;base64,...
 ./图片/1.jpg; ./图片/2.jpg
 ```
 
-## 7. Fast Confirmation Loop
+## 7. Media/Attachment Classification Boundary
+
+For every generated or updated media row, choose the media classification in this order:
+
+1. Original spreadsheet/table classification field, if present. Preserve the text exactly.
+2. Direct parent folder name, if no original classification field exists.
+3. Exact template/ERP category with the same name, if one exists.
+4. Explicit equivalence from MCP rules, field dictionaries, backend configuration, or project mappings.
+5. Preserve the original folder/category text and add `目标模板无同名分类，保留原始分类` when no explicit equivalence exists.
+
+Subjective recategorization is prohibited when an exact category or preservable original text exists. It is only allowed when the original text cannot be preserved and generation cannot continue; the row remark must be `原目录/原分类：X；目标分类：Y；原因：目标模板无同名分类且无法保留原分类，按内容语义降级映射。`
+
+The local checker and Product MCP precheck must reject media rows whose first column was rewritten against these rules. Examples of forbidden rewrites: `实测视频` -> `作业视频`, `配件图` -> `属具图`. If a created product is later found to have a wrong classification mapping, state that it was an execution/spec error and update the rule; do not blame an implicit system mapping.
+
+## 8. Fast Confirmation Loop
 
 Use this loop while the user is filling the document:
 
@@ -210,7 +235,7 @@ Use this loop while the user is filling the document:
    - expected form.
 7. When local blockers are gone, offer Product MCP precheck.
 
-## 8. Product MCP Precheck Loop
+## 9. Product MCP Precheck Loop
 
 When the user asks for official precheck:
 
@@ -229,12 +254,19 @@ When the user asks for official precheck:
 
 `product_precheck_package` is validation and draft preparation. It does not upload and does not create.
 
-For an actual create handoff, prefer `product_create_from_package`:
+For an actual single-product create handoff, prefer `product_create_from_package`:
 
 1. `product_create_from_package({ packagePath, runMode: "preview", responseMode: "summary" })` for side-effect-free precheck, duplicate gate, reference resolution, upload scope, field coverage, and create preview.
 2. Report blockers and the preview summary. If the workflow blocks, do not bypass it through atomic upload/create.
 3. After explicit user confirmation, call `product_create_from_package({ packagePath, runMode: "create", confirm: true, clientRequestId })`.
 4. The high-level workflow uploads and binds files, blocks before `product_create` if any valid upload item still failed, creates only when the package is complete, then verifies with detail lookup and returns a diff report.
+
+For a spreadsheet/table plus material-package batch handoff, prefer `product_create_from_batch`:
+
+1. `product_create_from_batch({ workbookPath, materialsRoot, runMode: "preview", responseMode: "summary" })` for side-effect-free row organization, precheck, duplicate gate, reference resolution, upload scope, field coverage, and create preview.
+2. Report batch-level blockers, row-level blockers, row identifiers, upload counts, and writeback targets/status returned by the workflow.
+3. After explicit user confirmation for all rows or an explicit selected-row set, call `product_create_from_batch({ workbookPath, materialsRoot, runMode: "create", confirm: true, clientRequestId })`.
+4. The batch workflow must write row-level failures back to the table/status artifact when supported, and successful rows must not hide failed-row blockers.
 
 Create payloads must not include edit-only nested primary keys such as `medias[].id`, `customerCases[].id`, `partLists[].id`, or `priceTiers[].id`. If those IDs appear in imported full-form data, strip them before `product_create`.
 
@@ -244,11 +276,12 @@ Create payloads must not include edit-only nested primary keys such as `medias[]
 
 - Treat every valid `uploadQueue` item as required. A valid item is one whose local relative path resolves and is not flagged as an error in `issues`.
 - All valid `uploadQueue` items must be uploaded (and confirmed uploaded) before `product_create`. Do not start creation with a partial upload set.
+- In batch mode, each row's valid `uploadQueue` is required for that row before creation; one row's success does not justify skipping another row's failed or pending uploads.
 - Do not silently split the queue into "core materials first" and "rich media later". If a file is in the valid `uploadQueue`, it is part of this build, not a follow-up.
-- In `product_create_from_package`, each valid upload item is attempted; a single failure is retried once and then marked with an error while the workflow continues uploading the remaining valid items. After the upload stage, any remaining failed valid item blocks creation and is reported with repair options.
+- In `product_create_from_package` and `product_create_from_batch`, each valid upload item is attempted; a single failure is retried once and then marked with an error while the workflow continues uploading the remaining valid items. After the upload stage, any remaining failed valid item blocks creation for the affected product and is reported with repair options.
 - In an atomic workflow, if a valid upload item fails after retry, stop before `product_create` and report options to the user — retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the user-confirmed update-and-recheck exception — instead of proceeding with a reduced product.
 
-## 9. Response Pattern
+## 10. Response Pattern
 
 For maintenance/precheck reports, use this shape:
 
@@ -274,7 +307,7 @@ For maintenance/precheck reports, use this shape:
 
 Keep user-facing reports business-readable. Put raw tool details only when they help the user fix a concrete issue.
 
-## 10. Safety Gates
+## 11. Safety Gates
 
 Never proceed to upload/create when:
 
@@ -282,6 +315,7 @@ Never proceed to upload/create when:
 - Template validation fails.
 - Required Product MCP tools are not callable.
 - Main image path is missing or invalid.
+- Media/attachment classification consistency fails, including rewritten original table categories, rewritten direct-parent folder categories, or missing subjective-fallback trace.
 - Duplicate check blocks.
 - The user has not explicitly confirmed creation.
 - The package contains local absolute paths, URLs, or base64 file content where local relative paths are expected.

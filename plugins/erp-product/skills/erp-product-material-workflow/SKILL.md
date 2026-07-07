@@ -102,12 +102,24 @@ Treat "整理所有文件资料" as full package management, not full content in
 - When a large document may contain required facts, ask for confirmation or read a bounded extract instead of full content.
 - User-facing reports should say when large files were only inventoried/classified and not content-read.
 
+## Spreadsheet-Driven Batch Intake
+
+When the user provides a spreadsheet/table and asks to organize or create multiple products, treat it as table-driven material organization:
+
+- Spreadsheet fields are the row-level source of truth for business facts such as product name, type, category, unit, supplier, region scope, support flags, prices, packaging fields, and row-specific notes.
+- Material package folders, filenames, existing `商品资料.md` files, and lightweight metadata are supplementary sources for each row. Use them to fill blanks or validate file references, but do not override explicit spreadsheet cells without confirmation.
+- By default, each spreadsheet row is one independent product. Do not combine rows into one product, SKU group, or variant set unless the user or table explicitly says so.
+- A batch confirmation can cover the whole batch once preview is complete. If the user wants only some rows, capture that selected row set before create mode.
+- Row-level failures must be reported with the row identifier and written back to the spreadsheet/status artifact when the batch workflow returns a writeback target. Successful rows do not erase failed-row blockers.
+- All single-product rules still apply per row: required fields, template validation, duplicate checks, reference lookup, upload completeness, and explicit create confirmation. Batch mode does not allow a core-materials-only first create.
+
 ## Upload Scope Discipline
 
 Metadata-only intake during organization must never silently reduce the upload scope during creation.
 
 - During material organization, the AI may inventory and classify large packages by metadata and read only selected contents (see *Large Package Intake*).
 - Once a file is referenced in `商品资料.md` and Product MCP precheck accepts it as a valid `uploadQueue` item, creation must upload every such item. The full set of referenced, precheck-valid files is the creation package; do not split it on your own.
+- In batch mode, once a file is referenced by a table row, generated row package, or row-level `uploadQueue`, it is part of that row's creation package and must be uploaded for that row before create.
 - The AI must not decide on its own to create with only core/representative/main materials and leave remaining referenced rich media (images, videos, attachments, certifications, cases) for later. "Read selectively" applies to organization, never to the upload step.
 - Exception — only when the user explicitly asks to create first with main/core/basic materials and finish the remaining media later. Under that exception:
   1. First confirm the reduced scope with the user, listing exactly which referenced files will be excluded from this creation.
@@ -221,7 +233,20 @@ Interpret results this way:
 - `path_issues`: absolute paths, URLs, base64-like values, missing files, or multi-file cells.
 - `path_warnings`: suspicious but not strictly blocking items.
 
-Do not upload or create until path issues are resolved. Users should place files under folders such as `图片/`, `视频/`, `附件/`, `认证/`, or `案例/`, then reference them with relative paths like `./图片/主图.jpg`.
+Do not upload or create until path issues are resolved. Prefer semantically precise folders such as `商品主图/`, `Banner 图/`, `配件图/`, `实测视频/`, `包装视频/`, `商品附件/`, `认证/`, or `客户案例/`, then reference them with relative paths like `./商品主图/主图.jpg`.
+
+## Media Classification Boundary
+
+When organizing media, attachments, images, or videos, preserve the user's classification source in this priority order:
+
+1. If the original spreadsheet/table row has a classification/use/type field, use that exact text as the first column in the target media row.
+2. If there is no original classification field, use the direct parent folder name as the media row classification.
+3. If the template or ERP form has a category that exactly matches that folder name, use the exact category. Do not rewrite it to a synonym, parent category, child category, or a category that merely seems better.
+4. If there is no exact category, use a standard category only when an explicit mapping exists in the MCP rule, field dictionary, configuration table, or project mapping.
+5. If no explicit mapping exists, keep the original folder/category text and add the remark `目标模板无同名分类，保留原始分类`.
+6. Subjective recategorization is allowed only as a last fallback when there is no original table classification, no exact template/ERP category, no explicit mapping, the original text cannot be preserved, and generation cannot continue otherwise. The remark must be `原目录/原分类：X；目标分类：Y；原因：目标模板无同名分类且无法保留原分类，按内容语义降级映射。`
+
+After generating or updating `商品资料.md`, run the local checker. Before Product MCP upload/create, run Product MCP precheck. Both checks must fail the package if a media row with an original classification marker, direct-parent classification, or subjective fallback trace has been rewritten incorrectly. Do not explain a post-create classification error as a system mapping issue; report it as an execution/spec error and fix the rule or document.
 
 ## Fast Local Loop
 
@@ -286,10 +311,10 @@ Do not create products as part of ordinary material maintenance. When the user a
 
 1. Ensure template validation passed; run `--normalize-template` first if the structure is nonstandard.
 2. Ensure runtime/auth are ready.
-3. Prefer `product_create_from_package` for the create handoff. First call it with `runMode: "preview"` and `responseMode: "summary"`; this must not upload or create.
+3. Prefer `product_create_from_package` for a single-product create handoff, or `product_create_from_batch` when the user provided a spreadsheet/table or asked for batch create. First call the chosen workflow with `runMode: "preview"` and `responseMode: "summary"`; this must not upload or create.
 4. Report preview blockers, duplicate-name results, reference-resolution results, upload queue count, field coverage, and create preview summary.
-5. If `product_create_from_package` is not callable, stop and report Product MCP tool unavailability unless the user explicitly requested an atomic diagnostic flow. Do not use browser/front-end fallbacks.
-6. After explicit user confirmation, call `product_create_from_package` with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when available.
+5. If the chosen high-level workflow is not callable, stop and report Product MCP tool unavailability unless the user explicitly requested an atomic diagnostic flow. Do not use browser/front-end fallbacks.
+6. After explicit user confirmation, call the chosen workflow with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when available. In batch mode, one confirmation may cover the full batch, but selected-row creation must be explicit.
 7. The high-level workflow uploads every valid precheck `uploadQueue` item, retries one failed upload once, continues remaining uploads, blocks creation if any valid item still failed, and verifies with `product_get_detail` after creation.
 8. Use `product_precheck_package`, `product_check_name_duplicate`, `product_upload_file`, `product_create`, and lookup tools directly only for an explicitly requested step-by-step or diagnostic workflow. In that atomic path, upload every item in the precheck `uploadQueue`; never self-narrow the set to core/main materials (see *Upload Scope Discipline*). If any valid queue item fails after retry, do not proceed to `product_create`.
 9. Summarize product name, category, unit, supplier, region scope, main image status, warnings, upload counts, product ID, and detail/diff results.
