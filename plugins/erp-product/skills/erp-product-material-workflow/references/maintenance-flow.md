@@ -57,6 +57,23 @@ Default behavior for large packages:
 
 When reporting progress, mention that large files were inventoried/classified rather than content-read.
 
+### Material package file boundary
+
+Treat source packages as read-mostly evidence. Normal organization, precheck, OCR, upload, and create workflows must not alter original user files.
+
+Allowed package writes:
+
+1. Create or update the root `商品资料.md` document when the user asked to organize/fill/normalize the package, or when the batch workflow intentionally generates it.
+2. Write derived MCP/skill artifacts under `.generated/`, such as OCR renders or prepared derivative files, while keeping the original files untouched.
+
+Forbidden without an explicit user request for that exact file operation:
+
+1. Rename, move, delete, compress, convert, overwrite, or reorganize original images, videos, PDFs, Word/Excel documents, text notes, archives, 3D files, or folders.
+2. Delete "duplicate", invalid, unsupported, or unused files from the package.
+3. Write outside the package root or into package paths other than the allowed `商品资料.md` / `.generated/` locations.
+
+Batch workbook progress writeback is allowed only through the batch workflow because it creates a workbook backup and writes progress/status columns deliberately.
+
 ### Spreadsheet-driven batch intake
 
 When the user provides a spreadsheet/table and asks to organize or create multiple products, treat the spreadsheet as the row-level fact source and the material package as supporting evidence:
@@ -216,6 +233,16 @@ For every generated or updated media row, choose the media classification in thi
 Subjective recategorization is prohibited when an exact category or preservable original text exists. It is only allowed when the original text cannot be preserved and generation cannot continue; the row remark must be `原目录/原分类：X；目标分类：Y；原因：目标模板无同名分类且无法保留原分类，按内容语义降级映射。`
 
 The local checker and Product MCP precheck must reject media rows whose first column was rewritten against these rules. Examples of forbidden rewrites: `实测视频` -> `作业视频`, `配件图` -> `属具图`. If a created product is later found to have a wrong classification mapping, state that it was an execution/spec error and update the rule; do not blame an implicit system mapping.
+
+### Testing video title/description sidecars
+
+- Scope: `链界实测视频` and `三方实测视频` only.
+- Pair exact same-directory stems first, then pair a video ending in `_converted`, `-converted`, or ` converted` with the unsuffixed `.txt` stem.
+- Parse `视频标题` and `视频描述` into the 6.2 row and preserve the real video path.
+- Record `文案来源：./.../name.txt` in the row remark.
+- Never upload the `.txt` or retain it as a rich-text row; it remains a read-only source file represented in `sourceCoverageReport`.
+- Missing text is a warning. Present but unreadable/incomplete text, orphan text, or ambiguous pairing blocks precheck/create.
+- User-authored table values take precedence. A legacy generated title exactly equal to the video filename stem is a fallback and may be replaced by the sidecar title.
 
 ## 8. Fast Confirmation Loop
 

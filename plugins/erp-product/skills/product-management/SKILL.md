@@ -117,6 +117,20 @@ When the user provides a local product package directory or product markdown fil
 
 Stop and ask for the missing business decision when a required field cannot be inferred from the package or read-only tools.
 
+## Certification OCR And Codex Vision Fallback
+
+Codex is the standard runtime platform for this workflow. Product MCP should try local OCR first when certification PDFs/images are present, but ordinary users do not need to install `tesseract`; it is only an optional faster OCR provider.
+
+When `product_create_from_package`, `product_create_from_batch`, `product_precheck_package`, or `product_ocr_certifications` returns `ocrFallback` / `visionExtractionRequest` with `fallbackType: "codex_native_vision"`:
+
+1. Treat OCR provider unavailability as a recoverable extraction step, not as permission to skip certification fields.
+2. Use Codex native image/PDF understanding on the listed local files in `visionExtractionRequest.files`.
+3. Return only structured facts that are visibly present. If a field is unclear, missing, or not shown on the certificate, set its `value` to `null`, include `uncertainty`, and do not invent it.
+4. Call `product_ocr_certifications` with `mode: "apply"` and `visionExtractionResults` matching the requested schema. This tool writes only blank certification fields, never overwrites user/table values, and records `Codex native vision fallback after OCR unavailable` in the remark.
+5. Re-run the high-level preview or `product_precheck_package` after vision apply. OCR or vision extraction never replaces the normal precheck, duplicate gate, reference resolution, upload binding, create confirmation, or detail verification.
+
+Use `ocrMode: "auto"` by default. Use `ocrMode: "off"` only when the user explicitly wants no OCR/vision assistance. Use `ocrMode: "strict"` only for diagnostics where OCR failure itself should block.
+
 ## Batch Workflow
 
 When the user provides a spreadsheet/table plus one or more material packages, or asks to create products from rows:
@@ -142,11 +156,25 @@ When `product_create_from_package` or `product_create_from_batch` uploads files,
 
 For atomic workflows, if any valid referenced item fails to upload or cannot be mapped to a backend reference after retry, stop before `product_create` and report the concrete file plus the available choices: retry, fix the path/permission/file format, replace the file, or explicitly narrow scope through the exception above and recheck.
 
+## Material Package File Boundary
+
+Product creation workflows must treat the user's material package as source evidence, not as a workspace to reorganize. Do not rename, move, delete, compress, convert, overwrite, or "clean up" original package files unless the user explicitly requests that exact file operation.
+
+The allowed package writes are narrow:
+
+- Generate or update the root `商品资料.md` when the material workflow or batch workflow is doing so intentionally.
+- Write MCP-owned derived artifacts under `.generated/`, such as OCR PDF page renders or prepared derivative files, while leaving the original source file untouched.
+- Write batch progress/status columns to the user-provided workbook only through the batch workflow, which creates a backup first.
+
+If a tool returns a material package write-boundary blocker, do not work around it by manually writing another package file. Report the blocked path and ask for an explicit user decision.
+
 ## Media Classification Boundary
 
 Before upload/create, enforce media/attachment classification consistency. If a spreadsheet row supplies a media classification/use/type, the media row must keep that exact value. Otherwise, the row classification must come from the direct parent folder name, an exact ERP/template category with the same name, or an explicitly maintained mapping. Do not subjectively rewrite categories when the original can be preserved; examples that must be blocked include `实测视频` -> `作业视频` and `配件图` -> `属具图`.
 
 If no exact category or explicit mapping exists, keep the original folder/category text and mark the row remark with `目标模板无同名分类，保留原始分类`. Subjective fallback requires the full trace `原目录/原分类：X；目标分类：Y；原因：目标模板无同名分类且无法保留原分类，按内容语义降级映射。` Product MCP precheck or the local checker may block the workflow if this trace is missing or inconsistent.
+
+For `链界实测视频` and `三方实测视频`, Product MCP may pair a same-directory `.txt` sidecar with the video, including `name_converted.mp4` + `name.txt`. Treat that text only as the source of `mediaTitle` and `mediaDesc`; it must not become a rich-text upload item. Inspect `videoMetadataReport` during preview. A missing sidecar is a warning, while an unreadable, incomplete, orphaned, or ambiguous sidecar blocks create. Do not bypass the blocker by uploading the video without its discovered business metadata.
 
 ## Create Safety
 

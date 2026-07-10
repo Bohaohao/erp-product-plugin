@@ -47,7 +47,7 @@ Default to a conversational fill-and-check loop:
    - Inspect nearby filenames, folder names, extensions, file sizes, and relative paths before reading file contents.
    - Use user-provided documents, spreadsheets, image names, attachment names, and notes as clues, but read large or binary files only when there is a specific extraction reason.
    - Mark inferred values as "待确认" when they affect business truth.
-   - For certification PDFs/images, use `product_ocr_certifications` when Product MCP is available. OCR may fill blank high-confidence certification fields, but must not overwrite user/table values, must keep low-confidence values as suggestions, and must still be followed by Product MCP precheck/preview. If the user explicitly asks to keep dates blank, pass the OCR date policy so OCR dates are not written back.
+   - For certification PDFs/images, use `product_ocr_certifications` when Product MCP is available. Product MCP tries local OCR first; if local OCR, PDF rendering, or image OCR is unavailable, it may return `visionExtractionRequest` with `fallbackType: "codex_native_vision"`. In that case, use Codex native image/PDF understanding on the listed local files, then call `product_ocr_certifications` again with `mode: "apply"` and `visionExtractionResults`. OCR/vision may fill blank high-confidence certification fields, but must not overwrite user/table values, must keep uncertain values as warnings or suggestions, and must still be followed by Product MCP precheck/preview. If the user explicitly asks to keep dates blank, pass the OCR date policy so OCR or vision dates are not written back. Ordinary users do not need to install `tesseract`; it is only an optional local OCR provider.
 
 4. Ask concise grouped questions.
    - Do not ask the user to understand Product MCP IDs or internal schema names.
@@ -102,6 +102,17 @@ Treat "整理所有文件资料" as full package management, not full content in
 - Read only `商品资料.md`, small text-like notes, and selected documents that are likely to contain missing business facts.
 - When a large document may contain required facts, ask for confirmation or read a bounded extract instead of full content.
 - User-facing reports should say when large files were only inventoried/classified and not content-read.
+
+## Material Package File Boundary
+
+Treat user material packages as read-mostly source evidence. Do not casually manipulate the user's original files.
+
+- Allowed writes inside a material package are limited to the root `商品资料.md` document and MCP/skill-owned `.generated/` derived artifacts.
+- Do not rename, move, delete, compress, convert, overwrite, or reorganize original user files such as images, videos, PDFs, Word/Excel files, text notes, archives, or 3D assets unless the user explicitly asks for that exact file operation.
+- Do not "clean up" duplicate-looking files, remove invalid files, change folder names, or replace source materials as part of normal organization, precheck, OCR, upload, or create workflows.
+- If a workflow needs a derived image, OCR render, crop, or conversion result, place it under `.generated/` and keep the original file untouched. The derived path must be traceable back to the source file.
+- If a user-supplied path would cause writing outside the package root or into anything other than the allowed `商品资料.md` / `.generated/` locations, stop and report a material package write-boundary blocker.
+- Batch workbook progress writeback is separate from material package source files; it is allowed only because the batch tool explicitly backs up the workbook and writes progress/status columns.
 
 ## Spreadsheet-Driven Batch Intake
 
@@ -249,6 +260,12 @@ When organizing media, attachments, images, or videos, preserve the user's class
 
 After generating or updating `商品资料.md`, run the local checker. Before Product MCP upload/create, run Product MCP precheck. Both checks must fail the package if a media row with an original classification marker, direct-parent classification, or subjective fallback trace has been rewritten incorrectly. Do not explain a post-create classification error as a system mapping issue; report it as an execution/spec error and fix the rule or document.
 
+### Testing Video Metadata Sidecars
+
+For `链界实测视频` and `三方实测视频`, look for a same-directory `.txt` sidecar before filling the 6.2 media row. Pair exact stems first (`动态特写.mp4` + `动态特写.txt`), then allow a video-only terminal `_converted`, `-converted`, or ` converted` suffix (`履带_converted.mp4` + `履带.txt`). Read `视频标题：...` and `视频描述：...` into the row's `标题` and `描述`; keep the actual video filename/path unchanged.
+
+The sidecar is business metadata, not an upload attachment. Do not put a paired or orphan sidecar into the rich-text table or upload queue. Do not rename, convert, move, or overwrite either source file. Missing sidecars are warnings; a present but unreadable/incomplete/ambiguous sidecar is a blocker reported with both file paths. Existing user-authored title/description values win, while an old automatically generated title equal to the video filename stem may be replaced by the parsed title.
+
 ## Fast Local Loop
 
 Use this sequence while helping the user fill a package:
@@ -314,11 +331,12 @@ Do not create products as part of ordinary material maintenance. When the user a
 2. Ensure runtime/auth are ready.
 3. Prefer `product_create_from_package` for a single-product create handoff, or `product_create_from_batch` when the user provided a spreadsheet/table or asked for batch create. First call the chosen workflow with `runMode: "preview"` and `responseMode: "summary"`; this must not upload or create.
 4. Report preview blockers, duplicate-name results, reference-resolution results, upload queue count, field coverage, and create preview summary.
-5. If the chosen high-level workflow is not callable, stop and report Product MCP tool unavailability unless the user explicitly requested an atomic diagnostic flow. Do not use browser/front-end fallbacks.
-6. After explicit user confirmation, call the chosen workflow with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when available. In batch mode, one confirmation may cover the full batch, but selected-row creation must be explicit.
-7. The high-level workflow uploads every valid precheck `uploadQueue` item, retries one failed upload once, continues remaining uploads, blocks creation if any valid item still failed, and verifies with `product_get_detail` after creation.
-8. Use `product_precheck_package`, `product_check_name_duplicate`, `product_upload_file`, `product_create`, and lookup tools directly only for an explicitly requested step-by-step or diagnostic workflow. In that atomic path, upload every item in the precheck `uploadQueue`; never self-narrow the set to core/main materials (see *Upload Scope Discipline*). If any valid queue item fails after retry, do not proceed to `product_create`.
-9. Summarize product name, category, unit, supplier, region scope, main image status, warnings, upload counts, product ID, and detail/diff results.
+5. If preview returns `ocrFallback.visionExtractionRequest`, perform the Codex native vision extraction, apply the structured results with `product_ocr_certifications`, then rerun preview. Do not treat OCR provider absence as a final blocker when Codex vision can read the certificate.
+6. If the chosen high-level workflow is not callable, stop and report Product MCP tool unavailability unless the user explicitly requested an atomic diagnostic flow. Do not use browser/front-end fallbacks.
+7. After explicit user confirmation, call the chosen workflow with `runMode: "create"` and `confirm: true`, reusing the preview `clientRequestId` when available. In batch mode, one confirmation may cover the full batch, but selected-row creation must be explicit.
+8. The high-level workflow uploads every valid precheck `uploadQueue` item, retries one failed upload once, continues remaining uploads, blocks creation if any valid item still failed, and verifies with `product_get_detail` after creation.
+9. Use `product_precheck_package`, `product_check_name_duplicate`, `product_upload_file`, `product_create`, and lookup tools directly only for an explicitly requested step-by-step or diagnostic workflow. In that atomic path, upload every item in the precheck `uploadQueue`; never self-narrow the set to core/main materials (see *Upload Scope Discipline*). If any valid queue item fails after retry, do not proceed to `product_create`.
+10. Summarize product name, category, unit, supplier, region scope, main image status, warnings, upload counts, product ID, and detail/diff results.
 
 ## Deeper Guide
 
